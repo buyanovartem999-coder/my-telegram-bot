@@ -81,3 +81,4 @@ def handle_all_messages(message):
     except Exception:
         bot.reply_to(message, "Ошибка связи с ИИ. Проверь API-ключ в настройках Railway.")
 
+bot.infinity_polling()
