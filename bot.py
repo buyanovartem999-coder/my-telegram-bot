@@ -11,12 +11,11 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS users
                    roblox TEXT, discord TEXT, games TEXT, bio TEXT)''')
 conn.commit()
 
-# Премиум-коды для Telegram
-P_SEARCH = "\U0001F984" # Анимированный единорог
-P_PROFILE = "\U0001F9A0" # Анимированный микроб
-P_SETTINGS = "\U0001F98B" # Анимированная бабочка
-P_SUCCESS = "\U0001F929" # Анимированное лицо с деньгами
-P_ERROR = "\U0001F974" # Анимированное лицо
+# Премиум Unicode-коды (анимируются в Telegram)
+# Если хочешь свои кастомные эмодзи из наборов, их нужно вставлять как объекты документов
+P_SEARCH = "\U0001FA84" 
+P_PROFILE = "\U0001FA99"
+P_SETTINGS = "\U0001FA9D"
 
 def get_user(chat_id):
     cursor.execute('SELECT * FROM users WHERE id = ?', (chat_id,))
@@ -42,26 +41,25 @@ def start(message):
 def callback(call):
     chat_id = call.message.chat.id
     if call.data == "find":
-        # Принудительная выборка из базы
         cursor.execute('SELECT * FROM users WHERE id != ?', (chat_id,))
         users = cursor.fetchall()
         if users:
             u = users[0]
-            bot.send_message(chat_id, f"FOUND: {u[1]}, {u[4]}")
+            bot.send_message(chat_id, f"USER: {u[1]} | AGE: {u[2]} | NICK: {u[4]}")
         else:
-            bot.send_message(chat_id, f"NO USERS {P_ERROR}")
+            bot.send_message(chat_id, "EMPTY")
 
     elif call.data == "profile":
         u = get_user(chat_id)
-        bot.send_message(chat_id, f"PROFILE: {u[1]} {P_SUCCESS}")
+        bot.send_message(chat_id, f"NAME: {u[1]} | AGE: {u[2]} | SEX: {u[3]}")
 
     elif call.data == "settings":
         markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("EDIT", callback_data="edit_name"))
-        bot.edit_message_text(f"SETTINGS {P_SETTINGS}", chat_id, call.message.message_id, reply_markup=markup)
+        markup.add(types.InlineKeyboardButton("EDIT NAME", callback_data="edit_name"))
+        bot.edit_message_text("SETTINGS", chat_id, call.message.message_id, reply_markup=markup)
 
     elif call.data == "edit_name":
-        msg = bot.send_message(chat_id, "NAME:")
+        msg = bot.send_message(chat_id, "ENTER NAME:")
         bot.register_next_step_handler(msg, lambda m: (cursor.execute('UPDATE users SET name = ? WHERE id = ?', (m.text, chat_id)), conn.commit()))
 
 bot.polling(none_stop=True)
