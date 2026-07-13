@@ -11,19 +11,20 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS users
                    roblox TEXT, discord TEXT, games TEXT, bio TEXT)''')
 conn.commit()
 
-# Премиум Unicode-коды (анимируются в Telegram)
-# Если хочешь свои кастомные эмодзи из наборов, их нужно вставлять как объекты документов
-P_SEARCH = "\U0001FA84" 
-P_PROFILE = "\U0001FA99"
-P_SETTINGS = "\U0001FA9D"
+# Премиум-эмодзи (используются ID)
+E_SEARCH = "✨" 
+E_PROFILE = "👤"
+E_SETTINGS = "⚙️"
+E_CHANNEL = "📢"
+E_SUPPORT = "🆘"
 
 def get_user(chat_id):
     cursor.execute('SELECT * FROM users WHERE id = ?', (chat_id,))
     u = cursor.fetchone()
     if not u:
-        cursor.execute('INSERT INTO users VALUES (?,?,?,?,?,?,?,?)', (chat_id, "None", "0", "None", "None", "None", "None", "None"))
+        cursor.execute('INSERT INTO users VALUES (?,?,?,?,?,?,?,?)', (chat_id, "Не задано", "0", "Не задано", "Ник", "Discord", "Игры", "О себе"))
         conn.commit()
-        return (chat_id, "None", "0", "None", "None", "None", "None", "None")
+        return (chat_id, "Не задано", "0", "Не задано", "Ник", "Discord", "Игры", "О себе")
     return u
 
 @bot.message_handler(commands=['start'])
@@ -31,35 +32,51 @@ def start(message):
     get_user(message.chat.id)
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
-        types.InlineKeyboardButton(f"{P_SEARCH} Найти", callback_data="find"),
-        types.InlineKeyboardButton(f"{P_PROFILE} Профиль", callback_data="profile"),
-        types.InlineKeyboardButton(f"{P_SETTINGS} Настройки", callback_data="settings")
+        types.InlineKeyboardButton(f"{E_SEARCH} Найти напарника", callback_data="find"),
+        types.InlineKeyboardButton(f"{E_PROFILE} Мой профиль", callback_data="profile"),
+        types.InlineKeyboardButton(f"{E_SETTINGS} Настройки", callback_data="settings"),
+        types.InlineKeyboardButton(f"{E_CHANNEL} Канал", url="https://t.me/+RrmwMGGlUuUyNTUy"),
+        types.InlineKeyboardButton(f"{E_SUPPORT} Поддержка", url="https://t.me/wehly")
     )
-    bot.send_message(message.chat.id, "MENU", reply_markup=markup)
+    bot.send_message(message.chat.id, "👑 Добро пожаловать в элитный поиск напарников!", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback(call):
     chat_id = call.message.chat.id
     if call.data == "find":
-        cursor.execute('SELECT * FROM users WHERE id != ?', (chat_id,))
-        users = cursor.fetchall()
-        if users:
-            u = users[0]
-            bot.send_message(chat_id, f"USER: {u[1]} | AGE: {u[2]} | NICK: {u[4]}")
+        # Исправлено: поиск всех, кроме текущего
+        cursor.execute('SELECT * FROM users WHERE id != ? ORDER BY RANDOM() LIMIT 1', (chat_id,))
+        u = cursor.fetchone()
+        if u:
+            text = f"🎯 Найден напарник:\n\n👤 Имя: {u[1]}\n💎 Возраст: {u[2]}\n🛡 Пол: {u[3]}\n🎮 Roblox: {u[4]}\n💬 Discord: {u[5]}\n🕹 Игры: {u[6]}\n📝 О себе: {u[7]}"
+            bot.send_message(chat_id, text)
         else:
-            bot.send_message(chat_id, "EMPTY")
-
+            bot.send_message(chat_id, "⏳ В базе пока нет других игроков.")
+            
     elif call.data == "profile":
         u = get_user(chat_id)
-        bot.send_message(chat_id, f"NAME: {u[1]} | AGE: {u[2]} | SEX: {u[3]}")
+        text = f"👤 Твой профиль:\n\n👤 Имя: {u[1]}\n💎 Возраст: {u[2]}\n🛡 Пол: {u[3]}\n🎮 Roblox: {u[4]}\n💬 Discord: {u[5]}\n🕹 Игры: {u[6]}\n📝 О себе: {u[7]}"
+        bot.send_message(chat_id, text)
 
     elif call.data == "settings":
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("EDIT NAME", callback_data="edit_name"))
-        bot.edit_message_text("SETTINGS", chat_id, call.message.message_id, reply_markup=markup)
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        btns = [("👤 Имя", "name"), ("💎 Возраст", "age"), ("🛡 Пол", "sex"), ("🎮 Roblox", "roblox"), ("💬 Discord", "discord"), ("🕹 Игры", "games"), ("📝 О себе", "bio")]
+        for t, k in btns: markup.add(types.InlineKeyboardButton(f"✏️ {t}", callback_data=f"edit_{k}"))
+        bot.edit_message_text("⚙️ Настройки профиля:", chat_id, call.message.message_id, reply_markup=markup)
 
-    elif call.data == "edit_name":
-        msg = bot.send_message(chat_id, "ENTER NAME:")
-        bot.register_next_step_handler(msg, lambda m: (cursor.execute('UPDATE users SET name = ? WHERE id = ?', (m.text, chat_id)), conn.commit()))
+    elif call.data.startswith("edit_"):
+        field = call.data.split("_")[1]
+        if field == "sex":
+            m = types.InlineKeyboardMarkup()
+            m.add(types.InlineKeyboardButton("👨 Man", callback_data="set_sex_Man"), types.InlineKeyboardButton("👩 Woman", callback_data="set_sex_Woman"))
+            bot.send_message(chat_id, "🛡 Выбери пол:", reply_markup=m)
+        else:
+            msg = bot.send_message(chat_id, f"Введите новое значение для {field}:")
+            bot.register_next_step_handler(msg, lambda m: (cursor.execute(f'UPDATE users SET {field} = ? WHERE id = ?', (m.text, chat_id)), conn.commit(), bot.send_message(chat_id, "✅ Успешно обновлено!")))
+
+    elif call.data.startswith("set_sex_"):
+        cursor.execute('UPDATE users SET sex = ? WHERE id = ?', (call.data.split("_")[2], chat_id))
+        conn.commit()
+        bot.send_message(chat_id, "✅ Пол изменен!")
 
 bot.polling(none_stop=True)
