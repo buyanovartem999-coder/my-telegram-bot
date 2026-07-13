@@ -11,58 +11,64 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS users
                    roblox TEXT, discord TEXT, games TEXT, bio TEXT, photo_id TEXT)''')
 conn.commit()
 
-user_state = {}
-
-def get_profile_text(user):
-    return (f"👤 **Твой профиль:**\n\n"
-            f"Имя: {user[1]}\nВозраст: {user[2]}\nПол: {user[3]}\n"
-            f"Roblox: {user[4]}\nDiscord: {user[5]}\nИгры: {user[6]}\nО себе: {user[7]}")
+# Инициализация пользователя, если его нет (чтобы профиль всегда работал)
+def ensure_user(chat_id):
+    cursor.execute('INSERT OR IGNORE INTO users (id, name, age, sex, roblox, discord, games, bio) VALUES (?,?,?,?,?,?,?,?)', 
+                   (chat_id, "Не задано", "0", "Не задано", "Не задано", "Не задано", "Не задано", "Не задано"))
+    conn.commit()
 
 @bot.message_handler(commands=['start'])
 def start(message):
+    ensure_user(message.chat.id)
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
         types.InlineKeyboardButton("✨ Найти напарника", callback_data="find"),
-        types.InlineKeyboardButton("👤 Профиль", callback_data="profile"),
+        types.InlineKeyboardButton("👤 Мой профиль", callback_data="profile"),
         types.InlineKeyboardButton("⚙️ Настройки", callback_data="settings"),
         types.InlineKeyboardButton("📢 Канал", url="https://t.me/+RrmwMGGlUuUyNTUy"),
         types.InlineKeyboardButton("🆘 Поддержка", url="https://t.me/wehly")
     )
-    bot.send_message(message.chat.id, "👋 Привет! Выбирай действие:", reply_markup=markup)
+    bot.send_message(message.chat.id, "👋 **Привет! Я твой помощник.** Выбирай действие:", reply_markup=markup, parse_mode="Markdown")
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback(call):
     chat_id = call.message.chat.id
-    
     if call.data == "profile":
         cursor.execute('SELECT * FROM users WHERE id = ?', (chat_id,))
-        user = cursor.fetchone()
-        if user: bot.send_message(chat_id, get_profile_text(user))
-        else: bot.send_message(chat_id, "❌ Профиль не найден. Напиши /reg")
-
+        u = cursor.fetchone()
+        text = f"👤 **Твой профиль**:\n\n🐸 Имя: {u[1]}\n💀 Возраст: {u[2]}\n⚧ Пол: {u[3]}\n🎮 Roblox: {u[4]}\n💬 Discord: {u[5]}\n🕹 Игры: {u[6]}\n📝 О себе: {u[7]}"
+        bot.send_message(chat_id, text, parse_mode="Markdown")
+    
     elif call.data == "settings":
         markup = types.InlineKeyboardMarkup(row_width=2)
-        fields = {"Имя": "name", "Возраст": "age", "Пол": "sex", "Roblox": "roblox", 
-                  "Discord": "discord", "Игры": "games", "О себе": "bio"}
-        for name, db_key in fields.items():
-            markup.add(types.InlineKeyboardButton(f"✏️ {name}", callback_data=f"edit_{db_key}"))
-        markup.add(types.InlineKeyboardButton("🔙 Назад", callback_data="start"))
-        bot.edit_message_text("✏️ Что хочешь изменить?", chat_id, call.message.message_id, reply_markup=markup)
+        buttons = [
+            ("🐸 Имя", "name"), ("💀 Возраст", "age"), ("⚧ Пол", "sex"),
+            ("🎮 Roblox", "roblox"), ("💬 Discord", "discord"), ("🕹 Игры", "games")
+        ]
+        for text, key in buttons:
+            markup.add(types.InlineKeyboardButton(f"✏️ {text}", callback_data=f"edit_{key}"))
+        bot.edit_message_text("⚙️ **Настройки профиля**:", chat_id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
 
     elif call.data.startswith("edit_"):
         field = call.data.split("_")[1]
-        user_state[chat_id] = field
-        msg = bot.send_message(chat_id, f"Введите новое значение для {field}:")
-        bot.register_next_step_handler(msg, save_edit)
+        if field == "sex":
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("👨 Man", callback_data="set_sex_Man"),
+                       types.InlineKeyboardButton("👩 Woman", callback_data="set_sex_Woman"))
+            bot.send_message(chat_id, "Выбери свой пол:", reply_markup=markup)
+        else:
+            msg = bot.send_message(chat_id, f"Введите новое значение для {field}:")
+            bot.register_next_step_handler(msg, lambda m: update_db(m, field))
 
-    elif call.data == "start":
-        start(call.message)
+    elif call.data.startswith("set_sex_"):
+        sex = call.data.split("_")[2]
+        cursor.execute('UPDATE users SET sex = ? WHERE id = ?', (sex, chat_id))
+        conn.commit()
+        bot.send_message(chat_id, "✅ Пол обновлен! Напиши /start")
 
-def save_edit(message):
-    chat_id = message.chat.id
-    field = user_state.get(chat_id)
-    cursor.execute(f'UPDATE users SET {field} = ? WHERE id = ?', (message.text, chat_id))
+def update_db(message, field):
+    cursor.execute(f'UPDATE users SET {field} = ? WHERE id = ?', (message.text, message.chat.id))
     conn.commit()
-    bot.send_message(chat_id, "✅ Успешно обновлено! Напиши /start")
+    bot.send_message(message.chat.id, "✅ Успешно! Напиши /start")
 
 bot.polling(none_stop=True)
