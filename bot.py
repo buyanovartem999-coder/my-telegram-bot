@@ -65,45 +65,19 @@ def start_command(message):
     welcome_text = LOCALES[lang]['welcome'].format(bot_name=BOT_USERNAME, clan_name=CLAN_NAME)
     bot.send_message(message.chat.id, welcome_text, reply_markup=get_main_keyboard(user_id), parse_mode="Markdown")
 
-def generate_ai_response(user_message, user_name):
-    prompt = user_message.lower()
-    if any(x in prompt for x in ["привет", "hello", "ку", "хай"]):
-        return f"Привет, {user_name}! Рад тебя слышать. Я твой верный Mentality Zero ИИ-помощник! 👾"
-    elif any(x in prompt for x in ["создатель", "wehly", "вехли", "автор"]):
-        return f"Мой создатель — легендарный {CREATOR_USERNAME}! Он создал меня, чтобы я помогал нашему клану и развивал проект Mentality Zero."
-    elif any(x in prompt for x in ["клан", "clan", "mentality"]):
-        return f"Клан {CLAN_NAME} — это топ-1! Мы лучшие, и я сделаю всё, чтобы помочь ребятам доминировать!"
-    elif any(x in prompt for x in ["кто ты", "что за бот"]):
-        return f"Я — {BOT_USERNAME}, официальный бот-помощник и любимчик великого клана {CLAN_NAME}! Умею общаться и открывать наш фирменный шоп."
-    elif any(x in prompt for x in ["токен", "купить", "infinity"]):
-        return f"О! Если ты хочешь приобрести статус Infinity или токены, нажми кнопку 'Открыть шоп' в меню или напиши напрямую {CREATOR_USERNAME}."
-    return f"Я, {BOT_USERNAME}, согласен с тобой! Как любимчик клана {CLAN_NAME}, я всегда на связи. Что еще обсудим?"
+import openai
+import os
 
-@bot.message_handler(content_types=['text'])
-def handle_text(message):
-    user_id = message.from_user.id
-    lang = user_languages.get(user_id, 'ru')
-    text = message.text
+client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-    if text in [LOCALES['ru']['who_am_i'], LOCALES['en']['who_am_i']]:
-        name = message.from_user.first_name
-        user_info = LOCALES[lang]['user_info'].format(
-            name=name, id=user_id, lang="Русский 🇷🇺" if lang == 'ru' else "English 🇺🇸"
+@bot.message_handler(func=lambda message: True)
+def handle_all_messages(message):
+    try:
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": message.text}]
         )
-        bot.send_message(message.chat.id, user_info, parse_mode="Markdown")
-    elif text in [LOCALES['ru']['about_clan'], LOCALES['en']['about_clan']]:
-        clan_info = LOCALES[lang]['clan_info'].format(clan_name=CLAN_NAME)
-        bot.send_message(message.chat.id, clan_info, parse_mode="Markdown")
-    elif text in [LOCALES['ru']['about_creator'], LOCALES['en']['about_creator']]:
-        creator_info = LOCALES[lang]['creator_info'].format(creator=CREATOR_USERNAME)
-        bot.send_message(message.chat.id, creator_info, parse_mode="Markdown")
-    elif text in [LOCALES['ru']['change_lang'], LOCALES['en']['change_lang']]:
-        new_lang = 'en' if lang == 'ru' else 'ru'
-        user_languages[user_id] = new_lang
-        bot.send_message(message.chat.id, LOCALES[new_lang]['lang_changed'], reply_markup=get_main_keyboard(user_id))
-    else:
-        ai_reply = generate_ai_response(text, message.from_user.first_name)
-        bot.send_message(message.chat.id, ai_reply)
+        bot.reply_to(message, response.choices[0].message.content)
+    except Exception:
+        bot.reply_to(message, "Ошибка связи с ИИ. Проверь API-ключ в настройках Railway.")
 
-if __name__ == "__main__":
-    bot.infinity_polling()
