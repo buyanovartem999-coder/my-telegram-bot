@@ -1,3 +1,8 @@
+import os
+import subprocess
+import sys
+subprocess.check_call([sys.executable, "-m", "pip", "install", "pyTelegramBotAPI", "google-generativeai"])
+
 import telebot
 from telebot import types
 import os
