@@ -24,17 +24,19 @@ def get_user(chat_id):
 @bot.message_handler(commands=['start'])
 def start(message):
     u = get_user(message.chat.id)
-    # Если нет фото — принудительно просим отправить
+    # Если нет фото — запрашиваем
     if not u[8]:
-        bot.send_message(message.chat.id, "⚠️ Для продолжения отправь свое фото (аватарку):")
-        bot.register_next_step_handler(message, save_photo)
+        msg = bot.send_message(message.chat.id, "⚠️ Для продолжения отправь свое фото (аватарку):")
+        bot.register_next_step_handler(msg, save_photo)
         return
 
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
-        types.InlineKeyboardButton("✨ Найти напарника", callback_data="find"),
-        types.InlineKeyboardButton("👤 Мой профиль", callback_data="profile"),
-        types.InlineKeyboardButton("⚙️ Настройки", callback_data="settings")
+        types.InlineKeyboardButton(f"✨ Найти напарника", callback_data="find"),
+        types.InlineKeyboardButton(f"👤 Мой профиль", callback_data="profile"),
+        types.InlineKeyboardButton(f"⚙️ Настройки", callback_data="settings"),
+        types.InlineKeyboardButton(f"📢 Канал", url="https://t.me/+RrmwMGGlUuUyNTUy"),
+        types.InlineKeyboardButton(f"🆘 Поддержка", url="https://t.me/wehly")
     )
     bot.send_message(message.chat.id, "👑 Добро пожаловать!", reply_markup=markup)
 
@@ -45,8 +47,8 @@ def save_photo(message):
         conn.commit()
         bot.send_message(message.chat.id, "✅ Фото сохранено! Напиши /start")
     else:
-        bot.send_message(message.chat.id, "❌ Это не фото. Попробуй еще раз.")
-        bot.register_next_step_handler(message, save_photo)
+        msg = bot.send_message(message.chat.id, "❌ Это не фото. Отправь картинку:")
+        bot.register_next_step_handler(msg, save_photo)
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback(call):
@@ -71,13 +73,14 @@ def callback(call):
         fields = [("👤 Имя", "name"), ("💎 Возраст", "age"), ("🛡 Пол", "sex"), 
                   ("🎮 Roblox", "roblox"), ("💬 Discord", "discord"), ("🖼 Фото", "photo")]
         for t, k in fields: markup.add(types.InlineKeyboardButton(f"✏️ {t}", callback_data=f"edit_{k}"))
-        bot.edit_message_text("⚙️ Выберите параметр:", chat_id, call.message.message_id, reply_markup=markup)
+        markup.add(types.InlineKeyboardButton("🔙 Назад", callback_data="start"))
+        bot.edit_message_text("⚙️ Выберите параметр для изменения:", chat_id, call.message.message_id, reply_markup=markup)
 
     elif call.data.startswith("edit_"):
         field = call.data.split("_")[1]
         if field == "photo":
-            bot.send_message(chat_id, "🖼 Отправь новое фото:")
-            bot.register_next_step_handler(call.message, save_photo)
+            msg = bot.send_message(chat_id, "🖼 Отправь новое фото:")
+            bot.register_next_step_handler(msg, save_photo)
         elif field == "sex":
             m = types.InlineKeyboardMarkup()
             m.add(types.InlineKeyboardButton("👨 Man", callback_data="set_sex_Man"), types.InlineKeyboardButton("👩 Woman", callback_data="set_sex_Woman"))
@@ -90,5 +93,8 @@ def callback(call):
         cursor.execute('UPDATE users SET sex = ? WHERE id = ?', (call.data.split("_")[2], chat_id))
         conn.commit()
         bot.send_message(chat_id, "✅ Пол изменен.")
+    
+    elif call.data == "start":
+        start(call.message)
 
 bot.polling(none_stop=True)
