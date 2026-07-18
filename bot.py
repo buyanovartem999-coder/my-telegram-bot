@@ -86,6 +86,7 @@ def get_edit_menu():
         types.InlineKeyboardButton(" Pepe Имя", callback_data="change_name"),
         types.InlineKeyboardButton("⏳ Возраст", callback_data="change_age_stub"),
         types.InlineKeyboardButton("🧬 Пол", callback_data="change_gender"),
+        types.InlineKeyboardButton("📸 Изменить фото", callback_data="change_photo"),
         types.InlineKeyboardButton("🟦 Roblox", callback_data="change_roblox"),
         types.InlineKeyboardButton("🎵 Discord", callback_data="change_discord"),
         types.InlineKeyboardButton("🎮 Игры", callback_data="change_games")
@@ -107,7 +108,7 @@ def start_cmd(message):
     conn.close()
     
     if user:
-        msg = bot.send_message(chat_id, f"С возвращением, {user[0]}!\nЧто делаем мяу? 🐈‍⬛", reply_markup=get_main_menu(chat_id))
+        bot.send_message(chat_id, f"С возвращением, {user[0]}!\nЧто делаем мяу? 🐈‍⬛", reply_markup=get_main_menu(chat_id))
     else:
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("Начать регистрацию 👾", callback_data="start_reg"))
@@ -157,6 +158,39 @@ def callback_handlers(call):
         reg_data[chat_id]['last_bot_msg'] = next_msg.message_id
         bot.register_next_step_handler(next_msg, reg_step_games)
 
+    elif call.data == "my_profile":
+        safe_delete(chat_id, msg_id)
+        conn = sqlite3.connect('database.db')
+        cursor = conn.cursor()
+        cursor.execute("SELECT name, roblox_nick, photo_id, gender, games, discord, description FROM users WHERE chat_id = ?", (chat_id,))
+        user = cursor.fetchone()
+        conn.close()
+        
+        if user:
+            name, roblox, photo, gender, games, discord, desc = user
+            profile_text = (
+                f"👤 **Твой профиль:**\n\n"
+                f"🏷 **Имя:** {name}\n"
+                f"🧬 **Пол:** {gender}\n"
+                f"🟦 **Roblox ник:** {roblox}\n"
+                f"🎵 **Discord:** {discord}\n"
+                f"🎮 **Игры:** {games}\n"
+                f"📝 **О себе:** {desc}"
+            )
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("← В главное меню", callback_data="delete_and_main"))
+            
+            if photo:
+                bot.send_photo(chat_id, photo, caption=profile_text, parse_mode="Markdown", reply_markup=markup)
+            else:
+                bot.send_message(chat_id, profile_text, parse_mode="Markdown", reply_markup=markup)
+        else:
+            bot.send_message(chat_id, "Анкета не найдена. Напиши /start для регистрации.")
+
+    elif call.data == "delete_and_main":
+        safe_delete(chat_id, msg_id)
+        bot.send_message(chat_id, "Что делаем мяу? 🐈‍⬛", reply_markup=get_main_menu(chat_id))
+
     elif call.data == "find_teammate":
         conn = sqlite3.connect('database.db')
         cursor = conn.cursor()
@@ -185,6 +219,7 @@ def callback_handlers(call):
         conn.close()
         bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text="Что делаем мяу? 🐈‍⬛", reply_markup=get_main_menu(chat_id))
 
+    # Кнопки изменения данных профиля
     elif call.data == "change_name":
         safe_delete(chat_id, msg_id)
         m = bot.send_message(chat_id, "Мяу, введи новое имя как к тебе обращаться! 🐈‍⬛")
@@ -197,6 +232,33 @@ def callback_handlers(call):
         safe_delete(chat_id, msg_id)
         m = bot.send_message(chat_id, "Введи новый Discord:")
         bot.register_next_step_handler(m, lambda msg: update_field(msg, "discord", m.message_id))
+    elif call.data == "change_games":
+        safe_delete(chat_id, msg_id)
+        m = bot.send_message(chat_id, "Введи новые игры через запятую:")
+        bot.register_next_step_handler(m, lambda msg: update_field(msg, "games", m.message_id))
+    elif call.data == "change_desc":
+        safe_delete(chat_id, msg_id)
+        m = bot.send_message(chat_id, "Введи новое описание о себе (до 100 символов):")
+        bot.register_next_step_handler(m, lambda msg: update_field(msg, "description", m.message_id))
+    elif call.data == "change_gender":
+        safe_delete(chat_id, msg_id)
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("Мужской 🧎‍♂️🐈‍⬛", callback_data="set_gender_male"),
+                   types.InlineKeyboardButton("Женский 🧎‍♀️🐈‍⬛", callback_data="set_gender_female"))
+        bot.send_message(chat_id, "Выбери свой пол:", reply_markup=markup)
+    elif call.data in ["set_gender_male", "set_gender_female"]:
+        safe_delete(chat_id, msg_id)
+        gender = "Мужской 🧎‍♂️🐈‍⬛" if call.data == "set_gender_male" else "Женский 🧎‍♀️🐈‍⬛"
+        conn = sqlite3.connect('database.db')
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET gender = ? WHERE chat_id = ?", (gender, chat_id))
+        conn.commit()
+        conn.close()
+        bot.send_message(chat_id, "✏️ Что хочешь изменить?", reply_markup=get_edit_menu())
+    elif call.data == "change_photo":
+        safe_delete(chat_id, msg_id)
+        m = bot.send_message(chat_id, "Отправь новое фото для твоего профиля: 📸")
+        bot.register_next_step_handler(m, update_photo, m.message_id)
 
 # --- ПОШАГОВАЯ РЕГИСТРАЦИЯ ---
 def reg_step_name(message):
@@ -298,6 +360,7 @@ def reg_step_desc(message):
     bot.send_message(chat_id, f"С возвращением, {reg_data[chat_id]['name']}!\nЧто делаем мяу? 🐈‍⬛", reply_markup=get_main_menu(chat_id))
     del reg_data[chat_id]
 
+# --- ОБНОВЛЕНИЕ ПОЛЕЙ В НАСТРОЙКАХ ---
 def update_field(message, field_name, bot_msg_id):
     chat_id = message.chat.id
     safe_delete(chat_id, message.message_id)
@@ -309,6 +372,25 @@ def update_field(message, field_name, bot_msg_id):
     conn.close()
     bot.send_message(chat_id, "✏️ Что хочешь изменить?", reply_markup=get_edit_menu())
 
+def update_photo(message, bot_msg_id):
+    chat_id = message.chat.id
+    safe_delete(chat_id, message.message_id)
+    safe_delete(chat_id, bot_msg_id)
+    
+    if not message.photo:
+        m = bot.send_message(chat_id, "Мяу, нужно отправить именно фото!")
+        bot.register_next_step_handler(m, update_photo, m.message_id)
+        return
+        
+    photo_id = message.photo[-1].file_id
+    conn = sqlite3.connect('database.db')
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET photo_id = ? WHERE chat_id = ?", (photo_id, chat_id))
+    conn.commit()
+    conn.close()
+    bot.send_message(chat_id, "✏️ Что хочешь изменить?", reply_markup=get_edit_menu())
+
 if __name__ == '__main__':
     print("Бот успешно запущен и готов к работе!")
     bot.polling(none_stop=True)
+
