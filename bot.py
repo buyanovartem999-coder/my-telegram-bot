@@ -12,7 +12,6 @@ bot = telebot.TeleBot(TOKEN)
 def init_db():
     conn = sqlite3.connect('database.db')
     cursor = conn.cursor()
-    # Добавили поля partner_id, likes, dislikes
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             chat_id INTEGER PRIMARY KEY,
@@ -37,10 +36,11 @@ def init_db():
 init_db()
 
 # Хранилище времени последнего сообщения для автовыхода (5 минут)
-# {chat_id: timestamp}
 last_activity = {}
 # Временное хранилище шагов регистрации
 reg_data = {}
+# Хранилище ID последнего сообщения в чате, чтобы оно НЕ удалялось
+last_message_id = {}
 
 # --- Вспомогательные функции ---
 def safe_delete(chat_id, message_id):
@@ -56,6 +56,9 @@ def is_english(text):
 def delayed_delete(chat_id, message_id, delay=60):
     def target():
         time.sleep(delay)
+        # Если это сообщение всё еще является самым последним в чате — НЕ удаляем его
+        if last_message_id.get(chat_id) == message_id:
+            return
         safe_delete(chat_id, message_id)
     threading.Thread(target=target, daemon=True).start()
 
@@ -71,16 +74,15 @@ def activity_monitor():
         
         for chat_id, partner_id in active_chats:
             last_t = last_activity.get(chat_id, current_time)
-            # Если неактивны более 5 минут
             if current_time - last_t > 300:
-                # Отключаем обоих
                 cursor.execute("UPDATE users SET partner_id = 0 WHERE chat_id IN (?, ?)", (chat_id, partner_id))
                 conn.commit()
                 
                 last_activity.pop(chat_id, None)
                 last_activity.pop(partner_id, None)
+                last_message_id.pop(chat_id, None)
+                last_message_id.pop(partner_id, None)
                 
-                # Переводим на стадию оценки
                 send_rating_menu(chat_id)
                 send_rating_menu(partner_id)
         conn.close()
@@ -185,19 +187,23 @@ def chat_messaging(message):
     
     if res and res[0] > 0:
         partner_id = res[0]
-        # Обновляем время активности
         last_activity[chat_id] = time.time()
         last_activity[partner_id] = time.time()
         
         # Пересылаем сообщение напарнику
         try:
             sent_msg = bot.send_message(partner_id, f"💬 Напарник: {message.text}")
-            # Удаляем сообщение у напарника через 1 минуту
+            
+            # Запоминаем это сообщение как последнее актуальное для напарника
+            last_message_id[partner_id] = sent_msg.message_id
+            
+            # Запускаем таймер удаления для напарника
             delayed_delete(partner_id, sent_msg.message_id, 60)
         except Exception:
             pass
             
-        # Удаляем отправленное сообщение у самого себя через 1 минуту для чистоты чата
+        # Запоминаем отправленное сообщение как последнее для самого себя (чтобы оно тоже не удалялось до нового ответа)
+        last_message_id[chat_id] = message.message_id
         delayed_delete(chat_id, message.message_id, 60)
     else:
         bot.send_message(chat_id, "Мяу? Воспользуйся кнопками меню ниже.", reply_markup=get_main_menu(chat_id))
@@ -297,16 +303,13 @@ def callback_handlers(call):
             user = cursor.fetchone()
             u_name, u_roblox, u_photo, u_gender, u_games, u_discord, u_desc = user
             
-            # Связываем пользователей
             cursor.execute("UPDATE users SET is_searching = 0, partner_id = ? WHERE chat_id = ?", (partner_id, chat_id))
             cursor.execute("UPDATE users SET is_searching = 0, partner_id = ? WHERE chat_id = ?", (chat_id, partner_id))
             conn.commit()
             
-            # Устанавливаем таймеры активности
             last_activity[chat_id] = time.time()
             last_activity[partner_id] = time.time()
             
-            # Отправка анкет и активация кнопок диалога
             info_to_user = f"🎉 Нашел напарника! Вы соединены в анонимном чате.\nВсё, что ты пишешь, отправляется ему!\n\n🏷 Имя: {p_name}\n🟦 Roblox: {p_roblox}\n🧬 Пол: {p_gender}\n🎮 Игры: {p_games}\n🎵 Discord: {p_discord}\n📝 О себе: {p_desc}"
             if p_photo: bot.send_photo(chat_id, p_photo, caption=info_to_user, reply_markup=get_chat_menu())
             else: bot.send_message(chat_id, info_to_user, reply_markup=get_chat_menu())
@@ -334,7 +337,6 @@ def callback_handlers(call):
         conn.close()
         bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text="Что делаем мяу? 🐈‍⬛", reply_markup=get_main_menu(chat_id))
 
-    # Логика работы чата (Завершение и обмен юзернеймами)
     elif call.data == "close_chat":
         safe_delete(chat_id, msg_id)
         conn = sqlite3.connect('database.db')
@@ -349,6 +351,8 @@ def callback_handlers(call):
             
             last_activity.pop(chat_id, None)
             last_activity.pop(partner_id, None)
+            last_message_id.pop(chat_id, None)
+            last_message_id.pop(partner_id, None)
             
             send_rating_menu(chat_id)
             send_rating_menu(partner_id)
@@ -394,22 +398,11 @@ def callback_handlers(call):
         safe_delete(chat_id, msg_id)
         bot.send_message(requester_id, "❌ Напарник отклонил запрос на обмен юзернеймами.")
 
-    # Обработка оценки
     elif call.data in ["rate_like", "rate_dislike"]:
         safe_delete(chat_id, msg_id)
-        conn = sqlite3.connect('database.db')
-        cursor = conn.cursor()
-        
-        # Нам нужен прошлый напарник, но так как связь уже разорвана, мы просто начисляем очки тому, 
-        # кто был последним активным связанным (для простоты сохраняем в бд или берем через лог, 
-        # но сделаем проще: найдем последнего, с кем общался, либо просто возвращаем в меню)
-        # В данном контексте начислим лайк случайному пользователю, который был в сессии, или просто закроем.
-        # Чтобы не усложнять структуру, добавим оценку:
         bot.answer_callback_query(call.id, "Спасибо за оценку! Мяу.")
         bot.send_message(chat_id, "Что делаем мяу? 🐈‍⬛", reply_markup=get_main_menu(chat_id))
-        conn.close()
 
-    # Кнопки изменения данных профиля
     elif call.data == "change_name":
         safe_delete(chat_id, msg_id)
         m = bot.send_message(chat_id, "Мяу, введи новое имя как к тебе обращаться! 🐈‍⬛")
