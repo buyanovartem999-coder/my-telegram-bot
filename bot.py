@@ -194,22 +194,43 @@ def callback_handlers(call):
     elif call.data == "find_teammate":
         conn = sqlite3.connect('database.db')
         cursor = conn.cursor()
-        cursor.execute("UPDATE users SET is_searching = 1 WHERE chat_id = ?", (chat_id,))
-        cursor.execute("SELECT COUNT(*) FROM users")
-        total_users = cursor.fetchone()[0]
-        conn.commit()
+        
+        # --- ИСПРАВЛЕННАЯ ЛОГИКА ---
+        # Ищем того, кто ищет, кроме самого себя
+        cursor.execute("SELECT chat_id, name, roblox_nick, photo_id, gender, games, discord, description FROM users WHERE is_searching = 1 AND chat_id != ?", (chat_id,))
+        partner = cursor.fetchone()
+        
+        if partner:
+            partner_id, p_name, p_roblox, p_photo, p_gender, p_games, p_discord, p_desc = partner
+            
+            # Данные нашего пользователя
+            cursor.execute("SELECT name, roblox_nick, photo_id, gender, games, discord, description FROM users WHERE chat_id = ?", (chat_id,))
+            user = cursor.fetchone()
+            u_name, u_roblox, u_photo, u_gender, u_games, u_discord, u_desc = user
+            
+            # Отправляем пользователю инфо о напарнике
+            info_to_user = f"🎉 Нашел напарника!\n\n🏷 Имя: {p_name}\n🟦 Roblox: {p_roblox}\n🧬 Пол: {p_gender}\n🎮 Игры: {p_games}\n🎵 Discord: {p_discord}\n📝 О себе: {p_desc}"
+            if p_photo: bot.send_photo(chat_id, p_photo, caption=info_to_user)
+            else: bot.send_message(chat_id, info_to_user)
+            
+            # Отправляем напарнику инфо о пользователе
+            info_to_partner = f"🎉 Нашел напарника!\n\n🏷 Имя: {u_name}\n🟦 Roblox: {u_roblox}\n🧬 Пол: {u_gender}\n🎮 Игры: {u_games}\n🎵 Discord: {u_discord}\n📝 О себе: {u_desc}"
+            if u_photo: bot.send_photo(partner_id, u_photo, caption=info_to_partner)
+            else: bot.send_message(partner_id, info_to_partner)
+            
+            # Сбрасываем статус
+            cursor.execute("UPDATE users SET is_searching = 0 WHERE chat_id IN (?, ?)", (chat_id, partner_id))
+            conn.commit()
+            bot.send_message(chat_id, "Мяу, удачной игры!", reply_markup=get_main_menu(chat_id))
+            bot.send_message(partner_id, "Мяу, удачной игры!", reply_markup=get_main_menu(partner_id))
+        else:
+            # Если никого нет, встаем в очередь
+            cursor.execute("UPDATE users SET is_searching = 1 WHERE chat_id = ?", (chat_id,))
+            conn.commit()
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("Перестать искать ❌", callback_data="stop_search"))
+            bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text="🔍 Ищем напарника...\n\nКак только кто-то появится — мы вас соединим.", reply_markup=markup)
         conn.close()
-        
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("Перестать искать ❌", callback_data="stop_search"))
-        
-        bot.edit_message_text(
-            chat_id=chat_id, message_id=msg_id, 
-            text=f"🔍 Ищем напарника...\n\nКак только кто-то появится — мы вас соединим.\n\n"
-                 f"ℹ️ Если в очереди кто-то есть, но матч не происходит — с этим человеком ты общался недавно.\n\n"
-                 f"👥 Всего в боте: {total_users} человек", 
-            reply_markup=markup
-        )
         
     elif call.data == "stop_search":
         conn = sqlite3.connect('database.db')
