@@ -114,7 +114,7 @@ def get_main_menu(chat_id):
     btn_notif = types.InlineKeyboardButton(f"🔔 Уведомления о поиске: {notif_status}", callback_data="toggle_notif")
     btn_news = types.InlineKeyboardButton("📣 Канал новостей ↗️", url="https://t.me/TheMeowMeowNews")
     btn_group = types.InlineKeyboardButton("👥 Наша группа ↗️", url="https://t.me/MeowMeowNaparniki")
-    btn_support = types.InlineKeyboardButton("💬 Поддержка ↗️", url="https://t.me/MeowMeowNaparniki")
+    btn_support = types.InlineKeyboardButton("💬 Поддержка ↗️", url="https://t.me/wehly")
     
     markup.add(btn_search)
     markup.add(btn_profile, btn_settings)
