@@ -35,11 +35,8 @@ def init_db():
 
 init_db()
 
-# Хранилище времени последнего сообщения для автовыхода (5 минут)
 last_activity = {}
-# Временное хранилище шагов регистрации
 reg_data = {}
-# Хранилище ID последнего сообщения в чате, чтобы оно НЕ удалялось
 last_message_id = {}
 
 # --- Вспомогательные функции ---
@@ -52,17 +49,36 @@ def safe_delete(chat_id, message_id):
 def is_english(text):
     return bool(re.match(r'^[a-zA-Z0-9_\-]+$', text))
 
-# Поток для автоматического удаления сообщения через 1 минуту (60 секунд)
 def delayed_delete(chat_id, message_id, delay=60):
     def target():
         time.sleep(delay)
-        # Если это сообщение всё еще является самым последним в чате — НЕ удаляем его
         if last_message_id.get(chat_id) == message_id:
             return
         safe_delete(chat_id, message_id)
     threading.Thread(target=target, daemon=True).start()
 
-# Поток для проверки неактивности (5 минут = 300 секунд)
+# Процесс красивого перехода с «Хорошо» во время регистрации
+def step_transition(chat_id, user_msg_id, bot_msg_id, next_text, next_step_func, reply_markup=None):
+    # Отправляем промежуточное "Хорошо"
+    ok_msg = bot.send_message(chat_id, "Хорошо...")
+    
+    # Запускаем отложенное удаление сообщения юзера через 5 секунд, чтобы чат не ломался
+    delayed_delete(chat_id, user_msg_id, 5)
+    
+    def wait_and_move():
+        time.sleep(3) # Даем юзеру увидеть "Хорошо"
+        safe_delete(chat_id, ok_msg.message_id)
+        safe_delete(chat_id, bot_msg_id)
+        
+        next_msg = bot.send_message(chat_id, next_text, reply_markup=reply_markup)
+        reg_data[chat_id]['last_bot_msg'] = next_msg.message_id
+        
+        if next_step_func:
+            bot.register_next_step_handler(next_msg, next_step_func)
+            
+    threading.Thread(target=wait_and_move, daemon=True).start()
+
+# Проверка неактивности (5 минут)
 def activity_monitor():
     while True:
         time.sleep(30)
@@ -143,7 +159,7 @@ def get_settings_menu():
 def get_edit_menu():
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
-        types.InlineKeyboardButton(" Pepe Имя", callback_data="change_name"),
+        types.InlineKeyboardButton("⚙️ Имя", callback_data="change_name"),
         types.InlineKeyboardButton("⏳ Возраст", callback_data="change_age_stub"),
         types.InlineKeyboardButton("🧬 Пол", callback_data="change_gender"),
         types.InlineKeyboardButton("📸 Изменить фото", callback_data="change_photo"),
@@ -159,7 +175,7 @@ def get_edit_menu():
 @bot.message_handler(commands=['start'])
 def start_cmd(message):
     chat_id = message.chat.id
-    safe_delete(chat_id, message.message_id) 
+    delayed_delete(chat_id, message.message_id, 5)
     
     conn = sqlite3.connect('database.db')
     cursor = conn.cursor()
@@ -174,7 +190,7 @@ def start_cmd(message):
         markup.add(types.InlineKeyboardButton("Начать регистрацию 👾", callback_data="start_reg"))
         bot.send_message(chat_id, "🐈‍⬛ Мяу, приветики это Roblox meow поиск напарников!!\n\nПеред началом создай профиль.", reply_markup=markup)
 
-# --- ЧАТ-ОБРАБОТЧИК ДЛЯ ПЕРЕСЫЛКИ СООБЩЕНИЙ ---
+# --- ЧАТ-ОБРАБОТЧИК ---
 @bot.message_handler(func=lambda message: True)
 def chat_messaging(message):
     chat_id = message.chat.id
@@ -190,19 +206,13 @@ def chat_messaging(message):
         last_activity[chat_id] = time.time()
         last_activity[partner_id] = time.time()
         
-        # Пересылаем сообщение напарнику
         try:
             sent_msg = bot.send_message(partner_id, f"💬 Напарник: {message.text}")
-            
-            # Запоминаем это сообщение как последнее актуальное для напарника
             last_message_id[partner_id] = sent_msg.message_id
-            
-            # Запускаем таймер удаления для напарника
             delayed_delete(partner_id, sent_msg.message_id, 60)
         except Exception:
             pass
             
-        # Запоминаем отправленное сообщение как последнее для самого себя (чтобы оно тоже не удалялось до нового ответа)
         last_message_id[chat_id] = message.message_id
         delayed_delete(chat_id, message.message_id, 60)
     else:
@@ -214,10 +224,11 @@ def callback_handlers(call):
     msg_id = call.message.message_id
     
     if call.data == "start_reg":
-        safe_delete(chat_id, msg_id)
         next_msg = bot.send_message(chat_id, "Как к тебе обращаться?")
         reg_data[chat_id] = {'last_bot_msg': next_msg.message_id}
         bot.register_next_step_handler(next_msg, reg_step_name)
+        # Удаляем кнопку старта только после отправки вопроса
+        safe_delete(chat_id, msg_id)
         
     elif call.data == "open_settings":
         bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text="⚙️ Настройки", reply_markup=get_settings_menu())
@@ -247,10 +258,19 @@ def callback_handlers(call):
     elif call.data in ["reg_male", "reg_female"]:
         gender = "Мужской 🧎‍♂️🐈‍⬛" if call.data == "reg_male" else "Женский 🧎‍♀️🐈‍⬛"
         reg_data[chat_id]['gender'] = gender
+        
+        # Переход к играм с задержкой и "Хорошо"
+        ok_msg = bot.send_message(chat_id, "Хорошо...")
         safe_delete(chat_id, msg_id)
-        next_msg = bot.send_message(chat_id, "В какие игры ты играешь? (Например: Blade ball, brookhaven итд...)")
-        reg_data[chat_id]['last_bot_msg'] = next_msg.message_id
-        bot.register_next_step_handler(next_msg, reg_step_games)
+        
+        def to_games():
+            time.sleep(2)
+            safe_delete(chat_id, ok_msg.message_id)
+            next_msg = bot.send_message(chat_id, "В какие игры ты играешь? (Например: Blade ball, brookhaven итд...)")
+            reg_data[chat_id]['last_bot_msg'] = next_msg.message_id
+            bot.register_next_step_handler(next_msg, reg_step_games)
+            
+        threading.Thread(target=to_games, daemon=True).start()
 
     elif call.data == "my_profile":
         safe_delete(chat_id, msg_id)
@@ -279,8 +299,6 @@ def callback_handlers(call):
                 bot.send_photo(chat_id, photo, caption=profile_text, parse_mode="Markdown", reply_markup=markup)
             else:
                 bot.send_message(chat_id, profile_text, parse_mode="Markdown", reply_markup=markup)
-        else:
-            bot.send_message(chat_id, "Анкета не найдена. Напиши /start для регистрации.")
 
     elif call.data == "delete_and_main":
         safe_delete(chat_id, msg_id)
@@ -289,16 +307,13 @@ def callback_handlers(call):
     elif call.data == "find_teammate":
         conn = sqlite3.connect('database.db')
         cursor = conn.cursor()
-        
         cursor.execute("SELECT chat_id, name, roblox_nick, photo_id, gender, games, discord, description FROM users WHERE is_searching = 1 AND chat_id != ?", (chat_id,))
         partner = cursor.fetchone()
-        
         cursor.execute("SELECT COUNT(*) FROM users")
         total_users = cursor.fetchone()[0]
         
         if partner:
             partner_id, p_name, p_roblox, p_photo, p_gender, p_games, p_discord, p_desc = partner
-            
             cursor.execute("SELECT name, roblox_nick, photo_id, gender, games, discord, description FROM users WHERE chat_id = ?", (chat_id,))
             user = cursor.fetchone()
             u_name, u_roblox, u_photo, u_gender, u_games, u_discord, u_desc = user
@@ -317,6 +332,7 @@ def callback_handlers(call):
             info_to_partner = f"🎉 Нашел напарника! Вы соединены в анонимном чате.\nВсё, что ты пишешь, отправляется ему!\n\n🏷 Имя: {u_name}\n🟦 Roblox: {u_roblox}\n🧬 Пол: {u_gender}\n🎮 Игры: {u_games}\n🎵 Discord: {u_discord}\n📝 О себе: {u_desc}"
             if u_photo: bot.send_photo(partner_id, u_photo, caption=info_to_partner, reply_markup=get_chat_menu())
             else: bot.send_message(partner_id, info_to_partner, reply_markup=get_chat_menu())
+            safe_delete(chat_id, msg_id)
         else:
             cursor.execute("UPDATE users SET is_searching = 1 WHERE chat_id = ?", (chat_id,))
             conn.commit()
@@ -400,12 +416,12 @@ def callback_handlers(call):
 
     elif call.data in ["rate_like", "rate_dislike"]:
         safe_delete(chat_id, msg_id)
-        bot.answer_callback_query(call.id, "Спасибо за оценку! Мяу.")
+        bot.answer_callback_query(call.id, "Спасибо за оценку!")
         bot.send_message(chat_id, "Что делаем мяу? 🐈‍⬛", reply_markup=get_main_menu(chat_id))
 
     elif call.data == "change_name":
         safe_delete(chat_id, msg_id)
-        m = bot.send_message(chat_id, "Мяу, введи новое имя как к тебе обращаться! 🐈‍⬛")
+        m = bot.send_message(chat_id, "Введи новое имя:")
         bot.register_next_step_handler(m, lambda msg: update_field(msg, "name", m.message_id))
     elif call.data == "change_roblox":
         safe_delete(chat_id, msg_id)
@@ -443,87 +459,90 @@ def callback_handlers(call):
         m = bot.send_message(chat_id, "Отправь новое фото для твоего профиля: 📸")
         bot.register_next_step_handler(m, update_photo, m.message_id)
 
-# --- ПОШАГОВАЯ РЕГИСТРАЦИЯ ---
+# --- ПОШАГОВАЯ РЕГИСТРАЦИЯ С ПЛАВНЫМ ПЕРЕХОДОМ ---
 def reg_step_name(message):
     chat_id = message.chat.id
-    safe_delete(chat_id, message.message_id) 
-    safe_delete(chat_id, reg_data[chat_id]['last_bot_msg']) 
     reg_data[chat_id]['name'] = message.text
-    next_msg = bot.send_message(chat_id, "Какой твой ник в Roblox? 🕹")
-    reg_data[chat_id]['last_bot_msg'] = next_msg.message_id
-    bot.register_next_step_handler(next_msg, reg_step_roblox)
+    step_transition(
+        chat_id, message.message_id, reg_data[chat_id]['last_bot_msg'],
+        "Какой твой ник в Roblox? 🕹", reg_step_roblox
+    )
 
 def reg_step_roblox(message):
     chat_id = message.chat.id
-    safe_delete(chat_id, message.message_id)
-    safe_delete(chat_id, reg_data[chat_id]['last_bot_msg'])
     nick = message.text
-    if len(nick) < 3:
-        next_msg = bot.send_message(chat_id, "Ники лишь от 3 букв!! 👾")
+    if len(nick) < 3 or not is_english(nick):
+        next_msg = bot.send_message(chat_id, "Ник должен быть на английском и от 3 символов! Попробуй еще раз:")
+        delayed_delete(chat_id, message.message_id, 5)
+        safe_delete(chat_id, reg_data[chat_id]['last_bot_msg'])
         reg_data[chat_id]['last_bot_msg'] = next_msg.message_id
         bot.register_next_step_handler(next_msg, reg_step_roblox)
         return
-    if not is_english(nick):
-        next_msg = bot.send_message(chat_id, "Roblox ники изначально Английские!!")
-        reg_data[chat_id]['last_bot_msg'] = next_msg.message_id
-        bot.register_next_step_handler(next_msg, reg_step_roblox)
-        return
+        
     reg_data[chat_id]['roblox_nick'] = nick
-    next_msg = bot.send_message(chat_id, "Отправь фото своего скина, или то что связано с тобой!! 👾")
-    reg_data[chat_id]['last_bot_msg'] = next_msg.message_id
-    bot.register_next_step_handler(next_msg, reg_step_photo)
-
-def reg_step_photo(message):
-    chat_id = message.chat.id
-    safe_delete(chat_id, message.message_id)
-    safe_delete(chat_id, reg_data[chat_id]['last_bot_msg'])
-    if not message.photo:
-        next_msg = bot.send_message(chat_id, "Принимаются лишь фото!!!")
-        reg_data[chat_id]['last_bot_msg'] = next_msg.message_id
-        bot.register_next_step_handler(next_msg, reg_step_photo)
-        return
-    reg_data[chat_id]['photo_id'] = message.photo[-1].file_id
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("Мужской 🧎‍♂️🐈‍⬛", callback_data="reg_male"),
                types.InlineKeyboardButton("Женский 🧎‍♀️🐈‍⬛", callback_data="reg_female"))
-    next_msg = bot.send_message(chat_id, "Какой твой пол? Кошка/кот", reply_markup=markup)
-    reg_data[chat_id]['last_bot_msg'] = next_msg.message_id
+    
+    step_transition(
+        chat_id, message.message_id, reg_data[chat_id]['last_bot_msg'],
+        "Какой твой пол? Кошка/кот", None, reply_markup=markup
+    )
 
 def reg_step_games(message):
     chat_id = message.chat.id
-    safe_delete(chat_id, message.message_id)
-    safe_delete(chat_id, reg_data[chat_id]['last_bot_msg'])
     reg_data[chat_id]['games'] = message.text
-    next_msg = bot.send_message(chat_id, "Какой твой дискорд? Напиши 'нет' если нету 🐈‍⬛")
-    reg_data[chat_id]['last_bot_msg'] = next_msg.message_id
-    bot.register_next_step_handler(next_msg, reg_step_discord)
+    step_transition(
+        chat_id, message.message_id, reg_data[chat_id]['last_bot_msg'],
+        "Какой твой дискорд? Напиши 'нет' если нету 🐈‍⬛", reg_step_discord
+    )
 
 def reg_step_discord(message):
     chat_id = message.chat.id
-    safe_delete(chat_id, message.message_id)
-    safe_delete(chat_id, reg_data[chat_id]['last_bot_msg'])
     dc = message.text
     if dc.lower() != "нет" and not is_english(dc):
         next_msg = bot.send_message(chat_id, "Дискорд должен быть на английском или напиши 'нет'!")
+        delayed_delete(chat_id, message.message_id, 5)
+        safe_delete(chat_id, reg_data[chat_id]['last_bot_msg'])
         reg_data[chat_id]['last_bot_msg'] = next_msg.message_id
         bot.register_next_step_handler(next_msg, reg_step_discord)
         return
+        
     reg_data[chat_id]['discord'] = dc
-    next_msg = bot.send_message(chat_id, "Хочешь ли ты добавить свое описание? Напиши 'нет' если не хочешь (до 100 символов)")
-    reg_data[chat_id]['last_bot_msg'] = next_msg.message_id
-    bot.register_next_step_handler(next_msg, reg_step_desc)
+    step_transition(
+        chat_id, message.message_id, reg_data[chat_id]['last_bot_msg'],
+        "Отправь фото своего скина, или то что связано с тобой!! 👾", reg_step_photo
+    )
+
+def reg_step_photo(message):
+    chat_id = message.chat.id
+    if not message.photo:
+        next_msg = bot.send_message(chat_id, "Принимаются лишь фото! Отправь картинку:")
+        delayed_delete(chat_id, message.message_id, 5)
+        safe_delete(chat_id, reg_data[chat_id]['last_bot_msg'])
+        reg_data[chat_id]['last_bot_msg'] = next_msg.message_id
+        bot.register_next_step_handler(next_msg, reg_step_photo)
+        return
+        
+    reg_data[chat_id]['photo_id'] = message.photo[-1].file_id
+    step_transition(
+        chat_id, message.message_id, reg_data[chat_id]['last_bot_msg'],
+        "Хочешь ли ты добавить свое описание? Напиши 'нет' если не хочешь (до 100 символов)", reg_step_desc
+    )
 
 def reg_step_desc(message):
     chat_id = message.chat.id
-    safe_delete(chat_id, message.message_id)
-    safe_delete(chat_id, reg_data[chat_id]['last_bot_msg'])
     desc = message.text
     if len(desc) > 100:
-        next_msg = bot.send_message(chat_id, "Описание слишком длинное! Должно быть до 100 символов.")
+        next_msg = bot.send_message(chat_id, "Описание слишком длинное! Должно быть до 100 символов. Попробуй снова:")
+        delayed_delete(chat_id, message.message_id, 5)
+        safe_delete(chat_id, reg_data[chat_id]['last_bot_msg'])
         reg_data[chat_id]['last_bot_msg'] = next_msg.message_id
         bot.register_next_step_handler(next_msg, reg_step_desc)
         return
+        
     reg_data[chat_id]['description'] = desc
+    
     conn = sqlite3.connect('database.db')
     cursor = conn.cursor()
     cursor.execute('''
@@ -535,16 +554,22 @@ def reg_step_desc(message):
     conn.commit()
     conn.close()
     
-    ok_msg = bot.send_message(chat_id, "Хорошо")
-    time.sleep(1)
-    safe_delete(chat_id, ok_msg.message_id)
-    bot.send_message(chat_id, f"С возвращением, {reg_data[chat_id]['name']}!\nЧто делаем мяу? 🐈‍⬛", reply_markup=get_main_menu(chat_id))
-    del reg_data[chat_id]
+    ok_msg = bot.send_message(chat_id, "Хорошо...")
+    delayed_delete(chat_id, message.message_id, 5)
+    
+    def finish_reg():
+        time.sleep(3)
+        safe_delete(chat_id, ok_msg.message_id)
+        safe_delete(chat_id, reg_data[chat_id]['last_bot_msg'])
+        bot.send_message(chat_id, f"С возвращением, {reg_data[chat_id]['name']}!\nЧто делаем мяу? 🐈‍⬛", reply_markup=get_main_menu(chat_id))
+        del reg_data[chat_id]
+        
+    threading.Thread(target=finish_reg, daemon=True).start()
 
 # --- ОБНОВЛЕНИЕ ПОЛЕЙ В НАСТРОЙКАХ ---
 def update_field(message, field_name, bot_msg_id):
     chat_id = message.chat.id
-    safe_delete(chat_id, message.message_id)
+    delayed_delete(chat_id, message.message_id, 5)
     safe_delete(chat_id, bot_msg_id)
     conn = sqlite3.connect('database.db')
     cursor = conn.cursor()
@@ -555,7 +580,7 @@ def update_field(message, field_name, bot_msg_id):
 
 def update_photo(message, bot_msg_id):
     chat_id = message.chat.id
-    safe_delete(chat_id, message.message_id)
+    delayed_delete(chat_id, message.message_id, 5)
     safe_delete(chat_id, bot_msg_id)
     
     if not message.photo:
@@ -574,4 +599,3 @@ def update_photo(message, bot_msg_id):
 if __name__ == '__main__':
     print("Бот успешно запущен и готов к работе!")
     bot.polling(none_stop=True)
-
