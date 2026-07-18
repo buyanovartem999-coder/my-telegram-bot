@@ -1,102 +1,314 @@
 import telebot
 from telebot import types
 import sqlite3
+import re
+import time
 
-bot = telebot.TeleBot("8744699618:AAFWqy7Yrhy0rSgcyxlRE28N658ZFGKLgA8")
+# Твой токен вставлен
+TOKEN = '8744699618:AAFWqy7Yrhy0rSgcyxlRE28N658ZFGKLgA8'
+bot = telebot.TeleBot(TOKEN)
 
-conn = sqlite3.connect('users.db', check_same_thread=False)
-cursor = conn.cursor()
-cursor.execute('''CREATE TABLE IF NOT EXISTS users 
-                  (id INTEGER PRIMARY KEY, name TEXT, age TEXT, sex TEXT, 
-                   roblox TEXT, discord TEXT, games TEXT, bio TEXT, photo_id TEXT, username TEXT)''')
-conn.commit()
-
-temp_data = {}
-
-def get_user(chat_id):
-    cursor.execute('SELECT * FROM users WHERE id = ?', (chat_id,))
-    u = cursor.fetchone()
-    username = bot.get_chat(chat_id).username or "Нет"
-    if not u:
-        cursor.execute('INSERT INTO users VALUES (?,?,?,?,?,?,?,?,?,?)', (chat_id, "Не задано", "0", "Не задано", "Ник", "Discord", "Игры", "О себе", None, username))
-    else:
-        cursor.execute('UPDATE users SET username = ? WHERE id = ?', (username, chat_id))
+# --- Инициализация базы данных ---
+def init_db():
+    conn = sqlite3.connect('database.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            chat_id INTEGER PRIMARY KEY,
+            username TEXT,
+            name TEXT,
+            roblox_nick TEXT,
+            photo_id TEXT,
+            gender TEXT,
+            games TEXT,
+            discord TEXT,
+            description TEXT,
+            notifications INTEGER DEFAULT 1,
+            is_searching INTEGER DEFAULT 0
+        )
+    ''')
     conn.commit()
-    return cursor.execute('SELECT * FROM users WHERE id = ?', (chat_id,)).fetchone()
+    conn.close()
 
-@bot.message_handler(commands=['start'])
-def start(message):
-    u = get_user(message.chat.id)
-    if not u[8]:
-        msg = bot.send_message(message.chat.id, "⚠️ Пришли фото для профиля:")
-        bot.register_next_step_handler(msg, save_photo)
-        return
+init_db()
+
+# --- Вспомогательные функции ---
+def safe_delete(chat_id, message_id):
+    try:
+        bot.delete_message(chat_id, message_id)
+    except Exception:
+        pass
+
+def is_english(text):
+    return bool(re.match(r'^[a-zA-Z0-9_\-]+$', text))
+
+# Временное хранилище шагов регистрации
+reg_data = {}
+
+# --- ГЛАВНЫЕ МЕНЮ (Генераторы кнопок) ---
+def get_main_menu(chat_id):
+    conn = sqlite3.connect('database.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT notifications FROM users WHERE chat_id = ?", (chat_id,))
+    res = cursor.fetchone()
+    conn.close()
+    
+    notif_status = "вкл" if res and res[0] == 1 else "выкл"
     
     markup = types.InlineKeyboardMarkup(row_width=2)
-    markup.add(types.InlineKeyboardButton("✨ Найти", callback_data="find"),
-               types.InlineKeyboardButton("👤 Профиль", callback_data="profile"),
-               types.InlineKeyboardButton("⚙️ Настройки", callback_data="settings"),
-               types.InlineKeyboardButton("📢 Канал", url="https://t.me/+RrmwMGGlUuUyNTUy"),
-               types.InlineKeyboardButton("🆘 Поддержка", url="https://t.me/wehly"))
-    bot.send_message(message.chat.id, "👑 Главное меню:", reply_markup=markup)
+    btn_search = types.InlineKeyboardButton("👻 Найти напарника", callback_data="find_teammate")
+    btn_profile = types.InlineKeyboardButton("👤 Мой профиль", callback_data="my_profile")
+    btn_settings = types.InlineKeyboardButton("⚙️ Настройки", callback_data="open_settings")
+    btn_notif = types.InlineKeyboardButton(f"🔔 Уведомления о поиске: {notif_status}", callback_data="toggle_notif")
+    btn_news = types.InlineKeyboardButton("📣 Канал новостей ↗️", url="https://t.me/TheMeowMeowNews")
+    btn_group = types.InlineKeyboardButton("👥 Наша группа ↗️", url="https://t.me/MeowMeowNaparniki")
+    btn_support = types.InlineKeyboardButton("💬 Поддержка ↗️", url="https://t.me/MeowMeowNaparniki")
+    
+    markup.add(btn_search)
+    markup.add(btn_profile, btn_settings)
+    markup.add(btn_notif)
+    markup.add(btn_news, btn_group)
+    markup.add(btn_support)
+    return markup
 
-def save_photo(message):
-    if message.photo:
-        cursor.execute('UPDATE users SET photo_id = ? WHERE id = ?', (message.photo[-1].file_id, message.chat.id))
-        conn.commit()
-        bot.send_message(message.chat.id, "✅ Сохранено! Напиши /start")
+def get_settings_menu():
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        types.InlineKeyboardButton("✏️ Редактировать профиль", callback_data="edit_profile"),
+        types.InlineKeyboardButton("🛑 Заблокированные", callback_data="blocked_users"),
+        types.InlineKeyboardButton("← Назад", callback_data="back_to_main")
+    )
+    return markup
+
+def get_edit_menu():
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        types.InlineKeyboardButton(" Pepe Имя", callback_data="change_name"),
+        types.InlineKeyboardButton("⏳ Возраст", callback_data="change_age_stub"),
+        types.InlineKeyboardButton("🧬 Пол", callback_data="change_gender"),
+        types.InlineKeyboardButton("🟦 Roblox", callback_data="change_roblox"),
+        types.InlineKeyboardButton("🎵 Discord", callback_data="change_discord"),
+        types.InlineKeyboardButton("🎮 Игры", callback_data="change_games")
+    )
+    markup.add(types.InlineKeyboardButton("📝 О себе", callback_data="change_desc"))
+    markup.add(types.InlineKeyboardButton("← Назад", callback_data="open_settings"))
+    return markup
+
+# --- СТАРТ И РЕГИСТРАЦИЯ ---
+@bot.message_handler(commands=['start'])
+def start_cmd(message):
+    chat_id = message.chat.id
+    safe_delete(chat_id, message.message_id) 
+    
+    conn = sqlite3.connect('database.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM users WHERE chat_id = ?", (chat_id,))
+    user = cursor.fetchone()
+    conn.close()
+    
+    if user:
+        msg = bot.send_message(chat_id, f"С возвращением, {user[0]}!\nЧто делаем мяу? 🐈‍⬛", reply_markup=get_main_menu(chat_id))
     else:
-        bot.register_next_step_handler(bot.send_message(message.chat.id, "❌ Пришли фото:"), save_photo)
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("Начать регистрацию 👾", callback_data="start_reg"))
+        bot.send_message(chat_id, "🐈‍⬛ Мяу, приветики это Roblox meow поиск напарников!!\n\nПеред началом создай профиль.", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: True)
-def callback(call):
+def callback_handlers(call):
     chat_id = call.message.chat.id
-    if call.data == "find":
-        cursor.execute('SELECT * FROM users WHERE id != ? AND photo_id IS NOT NULL ORDER BY RANDOM() LIMIT 1', (chat_id,))
-        u = cursor.fetchone()
-        if u:
-            temp_data[chat_id] = u[0]
-            markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton("❤️ Лайк", callback_data="like"),
-                       types.InlineKeyboardButton("👎 Диз", callback_data="find"))
-            bot.send_photo(chat_id, u[8], caption=f"🎯 Напарник: {u[1]}\n🎮 Roblox: {u[4]}\n📝 О себе: {u[7]}", reply_markup=markup)
-        else:
-            bot.send_message(chat_id, "⏳ Никого нет.")
-
-    elif call.data == "like":
-        target_id = temp_data.get(chat_id)
-        if target_id:
-            t_user = cursor.execute('SELECT username FROM users WHERE id = ?', (target_id,)).fetchone()[0]
-            bot.send_message(chat_id, f"✅ Ник напарника: @{t_user}. Можешь отправить ему сообщение ниже:")
-            bot.register_next_step_handler(call.message, lambda m: bot.send_message(target_id, f"📩 От напарника: {m.text}"))
-
-    elif call.data == "profile":
-        u = get_user(chat_id)
-        text = f"👤 {u[1]}\n💎 {u[2]}\n🛡 {u[3]}\n🎮 {u[4]}\n💬 {u[5]}\n🕹 {u[6]}\n📝 {u[7]}"
-        if u[8]: bot.send_photo(chat_id, u[8], caption=text)
-        else: bot.send_message(chat_id, text)
-
-    elif call.data == "settings":
-        markup = types.InlineKeyboardMarkup(row_width=2)
-        fields = [("Имя", "name"), ("Возраст", "age"), ("Пол", "sex"), ("Roblox", "roblox"), ("Discord", "discord"), ("Фото", "photo")]
-        for t, k in fields: markup.add(types.InlineKeyboardButton(f"✏️ {t}", callback_data=f"edit_{k}"))
-        bot.edit_message_text("⚙️ Что изменить?", chat_id, call.message.message_id, reply_markup=markup)
-
-    elif call.data.startswith("edit_"):
-        field = call.data.split("_")[1]
-        if field == "photo":
-            bot.register_next_step_handler(bot.send_message(chat_id, "🖼 Пришли фото:"), save_photo)
-        elif field == "sex":
-            m = types.InlineKeyboardMarkup()
-            m.add(types.InlineKeyboardButton("Man", callback_data="set_sex_Man"), types.InlineKeyboardButton("Woman", callback_data="set_sex_Woman"))
-            bot.send_message(chat_id, "🛡 Пол:", reply_markup=m)
-        else:
-            msg = bot.send_message(chat_id, f"Введите {field}:")
-            bot.register_next_step_handler(msg, lambda m: (cursor.execute(f'UPDATE users SET {field} = ? WHERE id = ?', (m.text, chat_id)), conn.commit(), bot.send_message(chat_id, "✅ Успешно.")))
-
-    elif call.data.startswith("set_sex_"):
-        cursor.execute('UPDATE users SET sex = ? WHERE id = ?', (call.data.split("_")[2], chat_id))
+    msg_id = call.message.message_id
+    
+    if call.data == "start_reg":
+        safe_delete(chat_id, msg_id)
+        next_msg = bot.send_message(chat_id, "Как к тебе обращаться?")
+        reg_data[chat_id] = {'last_bot_msg': next_msg.message_id}
+        bot.register_next_step_handler(next_msg, reg_step_name)
+        
+    elif call.data == "open_settings":
+        bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text="⚙️ Настройки", reply_markup=get_settings_menu())
+        
+    elif call.data == "back_to_main":
+        bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text="Что делаем мяу? 🐈‍⬛", reply_markup=get_main_menu(chat_id))
+        
+    elif call.data == "edit_profile":
+        bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text="✏️ Что хочешь изменить?", reply_markup=get_edit_menu())
+        
+    elif call.data == "blocked_users":
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("← Назад", callback_data="open_settings"))
+        bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text="Мяу, пока что нету заблокированных 🐈‍⬛", reply_markup=markup)
+        
+    elif call.data == "toggle_notif":
+        conn = sqlite3.connect('database.db')
+        cursor = conn.cursor()
+        cursor.execute("SELECT notifications FROM users WHERE chat_id = ?", (chat_id,))
+        current = cursor.fetchone()[0]
+        new_status = 0 if current == 1 else 1
+        cursor.execute("UPDATE users SET notifications = ? WHERE chat_id = ?", (new_status, chat_id))
         conn.commit()
-        bot.send_message(chat_id, "✅ Пол изменен.")
+        conn.close()
+        bot.edit_message_reply_markup(chat_id=chat_id, message_id=msg_id, reply_markup=get_main_menu(chat_id))
+        
+    elif call.data in ["reg_male", "reg_female"]:
+        gender = "Мужской 🧎‍♂️🐈‍⬛" if call.data == "reg_male" else "Женский 🧎‍♀️🐈‍⬛"
+        reg_data[chat_id]['gender'] = gender
+        safe_delete(chat_id, msg_id)
+        next_msg = bot.send_message(chat_id, "В какие игры ты играешь? (Например: Blade ball, brookhaven итд...)")
+        reg_data[chat_id]['last_bot_msg'] = next_msg.message_id
+        bot.register_next_step_handler(next_msg, reg_step_games)
 
-bot.polling(none_stop=True)
+    elif call.data == "find_teammate":
+        conn = sqlite3.connect('database.db')
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET is_searching = 1 WHERE chat_id = ?", (chat_id,))
+        cursor.execute("SELECT COUNT(*) FROM users")
+        total_users = cursor.fetchone()[0]
+        conn.commit()
+        conn.close()
+        
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("Перестать искать ❌", callback_data="stop_search"))
+        
+        bot.edit_message_text(
+            chat_id=chat_id, message_id=msg_id, 
+            text=f"🔍 Ищем напарника...\n\nКак только кто-то появится — мы вас соединим.\n\n"
+                 f"ℹ️ Если в очереди кто-то есть, но матч не происходит — с этим человеком ты общался недавно.\n\n"
+                 f"👥 Всего в боте: {total_users} человек", 
+            reply_markup=markup
+        )
+        
+    elif call.data == "stop_search":
+        conn = sqlite3.connect('database.db')
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET is_searching = 0 WHERE chat_id = ?", (chat_id,))
+        conn.commit()
+        conn.close()
+        bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text="Что делаем мяу? 🐈‍⬛", reply_markup=get_main_menu(chat_id))
+
+    elif call.data == "change_name":
+        safe_delete(chat_id, msg_id)
+        m = bot.send_message(chat_id, "Мяу, введи новое имя как к тебе обращаться! 🐈‍⬛")
+        bot.register_next_step_handler(m, lambda msg: update_field(msg, "name", m.message_id))
+    elif call.data == "change_roblox":
+        safe_delete(chat_id, msg_id)
+        m = bot.send_message(chat_id, "Введи новый ник в Roblox:")
+        bot.register_next_step_handler(m, lambda msg: update_field(msg, "roblox_nick", m.message_id))
+    elif call.data == "change_discord":
+        safe_delete(chat_id, msg_id)
+        m = bot.send_message(chat_id, "Введи новый Discord:")
+        bot.register_next_step_handler(m, lambda msg: update_field(msg, "discord", m.message_id))
+
+# --- ПОШАГОВАЯ РЕГИСТРАЦИЯ ---
+def reg_step_name(message):
+    chat_id = message.chat.id
+    safe_delete(chat_id, message.message_id) 
+    safe_delete(chat_id, reg_data[chat_id]['last_bot_msg']) 
+    reg_data[chat_id]['name'] = message.text
+    next_msg = bot.send_message(chat_id, "Какой твой ник в Roblox? 🕹")
+    reg_data[chat_id]['last_bot_msg'] = next_msg.message_id
+    bot.register_next_step_handler(next_msg, reg_step_roblox)
+
+def reg_step_roblox(message):
+    chat_id = message.chat.id
+    safe_delete(chat_id, message.message_id)
+    safe_delete(chat_id, reg_data[chat_id]['last_bot_msg'])
+    nick = message.text
+    if len(nick) < 3:
+        next_msg = bot.send_message(chat_id, "Ники лишь от 3 букв!! 👾")
+        reg_data[chat_id]['last_bot_msg'] = next_msg.message_id
+        bot.register_next_step_handler(next_msg, reg_step_roblox)
+        return
+    if not is_english(nick):
+        next_msg = bot.send_message(chat_id, "Roblox ники изначально Английские!!")
+        reg_data[chat_id]['last_bot_msg'] = next_msg.message_id
+        bot.register_next_step_handler(next_msg, reg_step_roblox)
+        return
+    reg_data[chat_id]['roblox_nick'] = nick
+    next_msg = bot.send_message(chat_id, "Отправь фото своего скина, или то что связано с тобой!! 👾")
+    reg_data[chat_id]['last_bot_msg'] = next_msg.message_id
+    bot.register_next_step_handler(next_msg, reg_step_photo)
+
+def reg_step_photo(message):
+    chat_id = message.chat.id
+    safe_delete(chat_id, message.message_id)
+    safe_delete(chat_id, reg_data[chat_id]['last_bot_msg'])
+    if not message.photo:
+        next_msg = bot.send_message(chat_id, "Принимаются лишь фото!!!")
+        reg_data[chat_id]['last_bot_msg'] = next_msg.message_id
+        bot.register_next_step_handler(next_msg, reg_step_photo)
+        return
+    reg_data[chat_id]['photo_id'] = message.photo[-1].file_id
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("Мужской 🧎‍♂️🐈‍⬛", callback_data="reg_male"),
+               types.InlineKeyboardButton("Женский 🧎‍♀️🐈‍⬛", callback_data="reg_female"))
+    next_msg = bot.send_message(chat_id, "Какой твой пол? Кошка/кот", reply_markup=markup)
+    reg_data[chat_id]['last_bot_msg'] = next_msg.message_id
+
+def reg_step_games(message):
+    chat_id = message.chat.id
+    safe_delete(chat_id, message.message_id)
+    safe_delete(chat_id, reg_data[chat_id]['last_bot_msg'])
+    reg_data[chat_id]['games'] = message.text
+    next_msg = bot.send_message(chat_id, "Какой твой дискорд? Напиши 'нет' если нету 🐈‍⬛")
+    reg_data[chat_id]['last_bot_msg'] = next_msg.message_id
+    bot.register_next_step_handler(next_msg, reg_step_discord)
+
+def reg_step_discord(message):
+    chat_id = message.chat.id
+    safe_delete(chat_id, message.message_id)
+    safe_delete(chat_id, reg_data[chat_id]['last_bot_msg'])
+    dc = message.text
+    if dc.lower() != "нет" and not is_english(dc):
+        next_msg = bot.send_message(chat_id, "Дискорд должен быть на английском или напиши 'нет'!")
+        reg_data[chat_id]['last_bot_msg'] = next_msg.message_id
+        bot.register_next_step_handler(next_msg, reg_step_discord)
+        return
+    reg_data[chat_id]['discord'] = dc
+    next_msg = bot.send_message(chat_id, "Хочешь ли ты добавить свое описание? Напиши 'нет' если не хочешь (до 100 символов)")
+    reg_data[chat_id]['last_bot_msg'] = next_msg.message_id
+    bot.register_next_step_handler(next_msg, reg_step_desc)
+
+def reg_step_desc(message):
+    chat_id = message.chat.id
+    safe_delete(chat_id, message.message_id)
+    safe_delete(chat_id, reg_data[chat_id]['last_bot_msg'])
+    desc = message.text
+    if len(desc) > 100:
+        next_msg = bot.send_message(chat_id, "Описание слишком длинное! Должно быть до 100 символов.")
+        reg_data[chat_id]['last_bot_msg'] = next_msg.message_id
+        bot.register_next_step_handler(next_msg, reg_step_desc)
+        return
+    reg_data[chat_id]['description'] = desc
+    conn = sqlite3.connect('database.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT OR REPLACE INTO users (chat_id, username, name, roblox_nick, photo_id, gender, games, discord, description)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (chat_id, message.from_user.username, reg_data[chat_id]['name'], reg_data[chat_id]['roblox_nick'], 
+          reg_data[chat_id]['photo_id'], reg_data[chat_id]['gender'], reg_data[chat_id]['games'], 
+          reg_data[chat_id]['discord'], reg_data[chat_id]['description']))
+    conn.commit()
+    conn.close()
+    ok_msg = bot.send_message(chat_id, "Хорошо")
+    time.sleep(2)
+    safe_delete(chat_id, ok_msg.message_id)
+    end_msg = bot.send_message(chat_id, "Анкета закончена. 🐈‍⬛")
+    time.sleep(2)
+    safe_delete(chat_id, end_msg.message_id)
+    bot.send_message(chat_id, f"С возвращением, {reg_data[chat_id]['name']}!\nЧто делаем мяу? 🐈‍⬛", reply_markup=get_main_menu(chat_id))
+    del reg_data[chat_id]
+
+def update_field(message, field_name, bot_msg_id):
+    chat_id = message.chat.id
+    safe_delete(chat_id, message.message_id)
+    safe_delete(chat_id, bot_msg_id)
+    conn = sqlite3.connect('database.db')
+    cursor = conn.cursor()
+    cursor.execute(f"UPDATE users SET {field_name} = ? WHERE chat_id = ?", (message.text, chat_id))
+    conn.commit()
+    conn.close()
+    bot.send_message(chat_id, "✏️ Что хочешь изменить?", reply_markup=get_edit_menu())
+
+if __name__ == '__main__':
+    print("Бот успешно запущен и готов к работе!")
+    bot.polling(none_stop=True)
