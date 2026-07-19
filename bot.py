@@ -661,6 +661,20 @@ def update_photo(message, bot_msg_id):
     conn.commit()
     conn.close()
     bot.send_message(chat_id, "✏️ Что хочешь изменить?", reply_markup=get_edit_menu())
+# --- РЕАКЦИЯ НА МЯУ В ГРУППАХ ---
+@bot.message_handler(func=lambda message: message.chat.type in ['group', 'supergroup'])
+def handle_group_meow(message):
+    # Проверяем, есть ли в тексте "мяу" (переводим в нижний регистр)
+    if message.text and "мяу" in message.text.lower():
+        try:
+            # Отправляем реакцию в виде лайка 👍
+            bot.set_message_reaction(
+                chat_id=message.chat.id,
+                message_id=message.message_id,
+                reaction=[types.ReactionTypeEmoji(emoji="👍")]
+            )
+        except Exception as e:
+            print(f"Не удалось поставить реакцию: {e}")
 
 if __name__ == '__main__':
     print("Бот успешно запущен и готов к работе!")
