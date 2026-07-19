@@ -4,11 +4,12 @@ import sqlite3
 import re
 import time
 import threading
+from datetime import datetime
 
 TOKEN = '8744699618:AAFWqy7Yrhy0rSgcyxlRE28N658ZFGKLgA8'
 bot = telebot.TeleBot(TOKEN)
 
-# --- Инициализация базы данных (Добавлен age) ---
+# --- Инициализация базы данных (Добавлены поля статистики) ---
 def init_db():
     conn = sqlite3.connect('database.db')
     cursor = conn.cursor()
@@ -28,7 +29,9 @@ def init_db():
             is_searching INTEGER DEFAULT 0,
             partner_id INTEGER DEFAULT 0,
             likes INTEGER DEFAULT 0,
-            dislikes INTEGER DEFAULT 0
+            dislikes INTEGER DEFAULT 0,
+            join_date TEXT,
+            msg_count INTEGER DEFAULT 0
         )
     ''')
     conn.commit()
@@ -40,6 +43,7 @@ last_activity = {}
 reg_data = {}
 last_message_id = {}
 sent_notifications = {} 
+who_ami_cooldown = {} # Словарь для кулдауна команды "Кто я"
 
 # --- Вспомогательные функции ---
 def safe_delete(chat_id, message_id):
@@ -78,6 +82,15 @@ def step_transition(chat_id, user_msg_id, bot_msg_id, next_text, next_step_func,
             bot.register_next_step_handler(next_msg, next_step_func)
             
     threading.Thread(target=wait_and_move, daemon=True).start()
+
+# Функция подсчета дней
+def get_days_word(days):
+    if days % 10 == 1 and days % 100 != 11:
+        return "день"
+    elif 2 <= days % 10 <= 4 and (days % 100 < 10 or days % 100 >= 20):
+        return "дня"
+    else:
+        return "дней"
 
 # --- ФОНОВЫЙ МОНИТОР ---
 def global_monitor():
@@ -221,30 +234,103 @@ def handle_group_messages(message):
         return
         
     text_lower = message.text.lower()
+    user_id = message.from_user.id
+    current_time = time.time()
+
+    # Засчитываем активность/мяуканье в общую базу данных
+    conn = sqlite3.connect('database.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT chat_id FROM users WHERE chat_id = ?", (user_id,))
+    if cursor.fetchone():
+        cursor.execute("UPDATE users SET msg_count = msg_count + 1 WHERE chat_id = ?", (user_id,))
+    else:
+        # Авто-создание мини-карточки, если человек просто пишет в группе
+        today_str = datetime.now().strftime("%d.%m.%Y")
+        cursor.execute("INSERT INTO users (chat_id, username, name, join_date, msg_count) VALUES (?, ?, ?, ?, 1)",
+                       (user_id, message.from_user.username, message.from_user.first_name, today_str))
+    conn.commit()
+    conn.close()
     
-    # Реакция на "Кто я" в группе
+    # Реакция на "Кто я" с кулдауном 3 минуты
     if text_lower == "кто я":
-        user_id = message.from_user.id
+        if user_id in who_ami_cooldown and current_time - who_ami_cooldown[user_id] < 180:
+            left = int(180 - (current_time - who_ami_cooldown[user_id]))
+            bot.reply_to(message, f"🐈‍⬛ Мяу! Не спамь. Команду можно вызывать раз в 3 минуты (осталось {left} сек).")
+            return
+            
+        who_ami_cooldown[user_id] = current_time
+        
         conn = sqlite3.connect('database.db')
         cursor = conn.cursor()
         cursor.execute("SELECT name, age, roblox_nick, photo_id, gender, games, discord, description, likes FROM users WHERE chat_id = ?", (user_id,))
         user = cursor.fetchone()
         conn.close()
         
-        if user:
+        if user and user[1]: # Проверяем, заполнена ли анкета (есть ли возраст)
             name, age, roblox, photo, gender, games, discord, desc, likes = user
             current_likes = int(likes) if likes else 0
             profile_text = f"👤 **Профиль пользователя {message.from_user.first_name}:**\n\n🏷 **Имя:** {name}\n⏳ **Возраст:** {age}\n🧬 **Пол:** {gender}\n🟦 **Roblox ник:** {roblox}\n🎵 **Discord:** {discord}\n🎮 **Игры:** {games}\n📝 **О себе:** {desc}\n\n❤️ **Лайков от напарников:** {current_likes}"
             
-            if photo:
-                bot.send_photo(message.chat.id, photo, caption=profile_text, parse_mode="Markdown")
-            else:
-                bot.send_message(message.chat.id, profile_text, parse_mode="Markdown")
+            if photo: bot.send_photo(message.chat.id, photo, caption=profile_text, parse_mode="Markdown")
+            else: bot.send_message(message.chat.id, profile_text, parse_mode="Markdown")
         else:
-            bot.reply_to(message, "🐈‍⬛ Мяу! Ты еще не зарегистрирован в боте. Перейди в лс к боту и напиши /start")
+            bot.reply_to(message, "🐈‍⬛ Мяу! Твой профиль еще не полностью заполнен. Зайди в ЛС к боту и пройди регистрацию через /start")
         return
 
-    # Реакция на "мяу" в группе
+    # Реальная динамическая статистика "Моя стата"
+    if text_lower == "моя стата":
+        conn = sqlite3.connect('database.db')
+        cursor = conn.cursor()
+        
+        # Получаем всех участников, отсортированных по количеству сообщений
+        cursor.execute("SELECT chat_id, name, msg_count, join_date FROM users ORDER BY msg_count DESC")
+        leaderboard = cursor.fetchall()
+        total_users = len(leaderboard)
+        
+        # Ищем позицию текущего юзера
+        my_rank = 0
+        my_data = None
+        for index, row in enumerate(leaderboard):
+            if row[0] == user_id:
+                my_rank = index + 1
+                my_data = row
+                break
+        conn.close()
+
+        if my_data:
+            _, u_name, m_count, j_date = my_data
+            
+            # Считаем дни «с нами»
+            try:
+                date_obj = datetime.strptime(j_date, "%d.%m.%Y")
+                days_delta = (datetime.now() - date_obj).days
+            except:
+                j_date = datetime.now().strftime("%d.%m.%Y")
+                days_delta = 0
+                
+            days_word = get_days_word(days_delta)
+            
+            # Звание по количеству сообщений
+            if m_count < 20: title = "🤫 Молчун"
+            elif m_count < 150: title = "💬 Болтун"
+            elif m_count < 500: title = "🔥 Активист"
+            else: title = "👑 Легенда Мяу"
+
+            stats_msg = (
+                f"👤 **Статистика — {message.from_user.first_name}**\n"
+                f"———————————————\n\n"
+                f"🏆 **Место в рейтинге:** {my_rank} место из {total_users}\n"
+                f"🐱 **Мяуканий (сообщений):** {m_count}\n"
+                f"———————————————\n\n"
+                f"⭐️ **Звание:** {title}\n"
+                f"📅 **В боте с:** {j_date} • с нами {days_delta} {days_word}\n"
+            )
+            bot.reply_to(message, stats_msg, parse_mode="Markdown")
+        else:
+            bot.reply_to(message, "🐈‍⬛ Напиши сначала что-нибудь в чат, чтобы я тебя посчитал!")
+        return
+
+    # Реакция на "мяу" в группе (Заменено на ❤️)
     if "мяу" in text_lower:
         try:
             bot.set_message_reaction(
@@ -522,7 +608,7 @@ def callback_handlers(call):
     elif call.data == "change_age":
         safe_delete(chat_id, msg_id)
         m = bot.send_message(chat_id, "Введи свой новый возраст:")
-        bot.register_next_step_handler(m, lambda msg: update_field(msg, "age", m.message_id))
+        bot.register_next_step_handler(m, update_age_field, m.message_id)
     elif call.data == "change_roblox":
         safe_delete(chat_id, msg_id)
         m = bot.send_message(chat_id, "Введи новый ник в Roblox:")
@@ -559,7 +645,7 @@ def callback_handlers(call):
         m = bot.send_message(chat_id, "Отправь новое фото для твоего профиля: 📸")
         bot.register_next_step_handler(m, update_photo, m.message_id)
 
-# --- ПОШАГОВАЯ РЕГИСТРАЦИЯ (С добавленным возрастом) ---
+# --- ПОШАГОВАЯ РЕГИСТРАЦИЯ ---
 def reg_step_name(message):
     chat_id = message.chat.id
     if chat_id not in reg_data: return
@@ -569,7 +655,18 @@ def reg_step_name(message):
 def reg_step_age(message):
     chat_id = message.chat.id
     if chat_id not in reg_data: return
-    reg_data[chat_id]['age'] = message.text
+    age_text = message.text
+    
+    # Умная проверка возраста (только цифры от 4 до 100)
+    if not age_text.isdigit() or not (4 <= int(age_text) <= 100):
+        next_msg = bot.send_message(chat_id, "Мяу, введи настоящий возраст цифрами (от 4 до 100):")
+        delayed_delete(chat_id, message.message_id, 5)
+        safe_delete(chat_id, reg_data[chat_id]['last_bot_msg'])
+        reg_data[chat_id]['last_bot_msg'] = next_msg.message_id
+        bot.register_next_step_handler(next_msg, reg_step_age)
+        return
+        
+    reg_data[chat_id]['age'] = age_text
     step_transition(chat_id, message.message_id, reg_data[chat_id]['last_bot_msg'], "Какой твой ник в Roblox? 🕹", reg_step_roblox)
 
 def reg_step_roblox(message):
@@ -661,15 +758,16 @@ def reg_step_desc(message):
         return
         
     reg_data[chat_id]['description'] = desc
+    today_str = datetime.now().strftime("%d.%m.%Y")
     
     conn = sqlite3.connect('database.db')
     cursor = conn.cursor()
     cursor.execute('''
-        INSERT OR REPLACE INTO users (chat_id, username, name, age, roblox_nick, photo_id, gender, games, discord, description)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT OR REPLACE INTO users (chat_id, username, name, age, roblox_nick, photo_id, gender, games, discord, description, join_date)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (chat_id, message.from_user.username, reg_data[chat_id]['name'], reg_data[chat_id]['age'], 
           reg_data[chat_id]['roblox_nick'], reg_data[chat_id]['photo_id'], reg_data[chat_id]['gender'], 
-          reg_data[chat_id]['games'], reg_data[chat_id]['discord'], reg_data[chat_id]['description']))
+          reg_data[chat_id]['games'], reg_data[chat_id]['discord'], reg_data[chat_id]['description'], today_str))
     conn.commit()
     conn.close()
     
@@ -693,6 +791,25 @@ def update_field(message, field_name, bot_msg_id):
     conn = sqlite3.connect('database.db')
     cursor = conn.cursor()
     cursor.execute(f"UPDATE users SET {field_name} = ? WHERE chat_id = ?", (message.text, chat_id))
+    conn.commit()
+    conn.close()
+    bot.send_message(chat_id, "✏️ Что хочешь изменить?", reply_markup=get_edit_menu())
+
+def update_age_field(message, bot_msg_id):
+    chat_id = message.chat.id
+    delayed_delete(chat_id, message.message_id, 5)
+    age_text = message.text
+    
+    if not age_text.isdigit() or not (4 <= int(age_text) <= 100):
+        safe_delete(chat_id, bot_msg_id)
+        m = bot.send_message(chat_id, "Мяу, возраст должен быть числом от 4 до 100! Попробуй еще раз:")
+        bot.register_next_step_handler(m, update_age_field, m.message_id)
+        return
+        
+    safe_delete(chat_id, bot_msg_id)
+    conn = sqlite3.connect('database.db')
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET age = ? WHERE chat_id = ?", (age_text, chat_id))
     conn.commit()
     conn.close()
     bot.send_message(chat_id, "✏️ Что хочешь изменить?", reply_markup=get_edit_menu())
