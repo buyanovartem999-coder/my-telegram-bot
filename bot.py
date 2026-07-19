@@ -9,7 +9,7 @@ from datetime import datetime
 TOKEN = '8744699618:AAFWqy7Yrhy0rSgcyxlRE28N658ZFGKLgA8'
 bot = telebot.TeleBot(TOKEN)
 
-# --- Инициализация базы данных (Добавлены поля статистики) ---
+# --- Инициализация базы данных ---
 def init_db():
     conn = sqlite3.connect('database.db')
     cursor = conn.cursor()
@@ -43,9 +43,8 @@ last_activity = {}
 reg_data = {}
 last_message_id = {}
 sent_notifications = {} 
-who_ami_cooldown = {} # Словарь для кулдауна команды "Кто я"
+who_ami_cooldown = {} 
 
-# --- Вспомогательные функции ---
 def safe_delete(chat_id, message_id):
     try:
         bot.delete_message(chat_id, message_id)
@@ -64,26 +63,18 @@ def delayed_delete(chat_id, message_id, delay=60):
     threading.Thread(target=target, daemon=True).start()
 
 def step_transition(chat_id, user_msg_id, bot_msg_id, next_text, next_step_func, reply_markup=None):
-    ok_msg = bot.send_message(chat_id, "Хорошо...")
     if user_msg_id:
         delayed_delete(chat_id, user_msg_id, 5)
+    if bot_msg_id:
+        safe_delete(chat_id, bot_msg_id)
+        
+    next_msg = bot.send_message(chat_id, next_text, reply_markup=reply_markup)
+    if chat_id in reg_data:
+        reg_data[chat_id]['last_bot_msg'] = next_msg.message_id
     
-    def wait_and_move():
-        time.sleep(3)
-        safe_delete(chat_id, ok_msg.message_id)
-        if bot_msg_id:
-            safe_delete(chat_id, bot_msg_id)
-        
-        next_msg = bot.send_message(chat_id, next_text, reply_markup=reply_markup)
-        if chat_id in reg_data:
-            reg_data[chat_id]['last_bot_msg'] = next_msg.message_id
-        
-        if next_step_func:
-            bot.register_next_step_handler(next_msg, next_step_func)
-            
-    threading.Thread(target=wait_and_move, daemon=True).start()
+    if next_step_func:
+        bot.register_next_step_handler(next_msg, next_step_func)
 
-# Функция подсчета дней
 def get_days_word(days):
     if days % 10 == 1 and days % 100 != 11:
         return "день"
@@ -97,7 +88,6 @@ def global_monitor():
     while True:
         time.sleep(10)
         current_time = time.time()
-        
         try:
             conn = sqlite3.connect('database.db')
             cursor = conn.cursor()
@@ -214,11 +204,11 @@ def start_cmd(message):
     
     conn = sqlite3.connect('database.db')
     cursor = conn.cursor()
-    cursor.execute("SELECT name FROM users WHERE chat_id = ?", (chat_id,))
+    cursor.execute("SELECT name, age FROM users WHERE chat_id = ?", (chat_id,))
     user = cursor.fetchone()
     conn.close()
     
-    if user:
+    if user and user[1]: # Проверяем, заполнена ли анкета полностью (есть возраст)
         bot.send_message(chat_id, f"С возвращением, {user[0]}!\nЧто делаем мяу? 🐈‍⬛", reply_markup=get_main_menu(chat_id))
     else:
         if chat_id in reg_data:
@@ -237,36 +227,32 @@ def handle_group_messages(message):
     user_id = message.from_user.id
     current_time = time.time()
 
-    # Засчитываем активность/мяуканье в общую базу данных
     conn = sqlite3.connect('database.db')
     cursor = conn.cursor()
     cursor.execute("SELECT chat_id FROM users WHERE chat_id = ?", (user_id,))
     if cursor.fetchone():
         cursor.execute("UPDATE users SET msg_count = msg_count + 1 WHERE chat_id = ?", (user_id,))
     else:
-        # Авто-создание мини-карточки, если человек просто пишет в группе
         today_str = datetime.now().strftime("%d.%m.%Y")
         cursor.execute("INSERT INTO users (chat_id, username, name, join_date, msg_count) VALUES (?, ?, ?, ?, 1)",
                        (user_id, message.from_user.username, message.from_user.first_name, today_str))
     conn.commit()
     conn.close()
     
-    # Реакция на "Кто я" с кулдауном 3 минуты
     if text_lower == "кто я":
-        if user_id in who_ami_cooldown and current_time - who_ami_cooldown[user_id] < 180:
-            left = int(180 - (current_time - who_ami_cooldown[user_id]))
-            bot.reply_to(message, f"🐈‍⬛ Мяу! Не спамь. Команду можно вызывать раз в 3 минуты (осталось {left} сек).")
-            return
-            
-        who_ami_cooldown[user_id] = current_time
-        
         conn = sqlite3.connect('database.db')
         cursor = conn.cursor()
         cursor.execute("SELECT name, age, roblox_nick, photo_id, gender, games, discord, description, likes FROM users WHERE chat_id = ?", (user_id,))
         user = cursor.fetchone()
         conn.close()
         
-        if user and user[1]: # Проверяем, заполнена ли анкета (есть ли возраст)
+        if user and user[1]: 
+            if user_id in who_ami_cooldown and current_time - who_ami_cooldown[user_id] < 180:
+                left = int(180 - (current_time - who_ami_cooldown[user_id]))
+                bot.reply_to(message, f"🐈‍⬛ Мяу! Не спамь. Команду можно вызывать раз в 3 минуты (осталось {left} сек).")
+                return
+            
+            who_ami_cooldown[user_id] = current_time
             name, age, roblox, photo, gender, games, discord, desc, likes = user
             current_likes = int(likes) if likes else 0
             profile_text = f"👤 **Профиль пользователя {message.from_user.first_name}:**\n\n🏷 **Имя:** {name}\n⏳ **Возраст:** {age}\n🧬 **Пол:** {gender}\n🟦 **Roblox ник:** {roblox}\n🎵 **Discord:** {discord}\n🎮 **Игры:** {games}\n📝 **О себе:** {desc}\n\n❤️ **Лайков от напарников:** {current_likes}"
@@ -274,28 +260,18 @@ def handle_group_messages(message):
             if photo: bot.send_photo(message.chat.id, photo, caption=profile_text, parse_mode="Markdown")
             else: bot.send_message(message.chat.id, profile_text, parse_mode="Markdown")
         else:
-            # Вместо текста с /start отправляем красивую кнопку для перехода в бота
             markup = types.InlineKeyboardMarkup()
             markup.add(types.InlineKeyboardButton("Пройти регистрацию 🚀", url="https://t.me/Roblox_finder_zero_bot?start=reg"))
-            
-            bot.reply_to(
-                message, 
-                "🐈‍⬛ Мяу! Твой профиль еще не заполнен. Нажми на кнопку ниже, чтобы быстро зарегистрироваться в лс:", 
-                reply_markup=markup
-            )
+            bot.reply_to(message, "🐈‍⬛ Мяу! Твой профиль еще не заполнен. Нажми на кнопку ниже, чтобы пройти регистрацию в лс:", reply_markup=markup)
         return
 
-    # Реальная динамическая статистика "Моя стата"
     if text_lower == "моя стата":
         conn = sqlite3.connect('database.db')
         cursor = conn.cursor()
-        
-        # Получаем всех участников, отсортированных по количеству сообщений
         cursor.execute("SELECT chat_id, name, msg_count, join_date FROM users ORDER BY msg_count DESC")
         leaderboard = cursor.fetchall()
         total_users = len(leaderboard)
         
-        # Ищем позицию текущего юзера
         my_rank = 0
         my_data = None
         for index, row in enumerate(leaderboard):
@@ -307,8 +283,6 @@ def handle_group_messages(message):
 
         if my_data:
             _, u_name, m_count, j_date = my_data
-            
-            # Считаем дни «с нами»
             try:
                 date_obj = datetime.strptime(j_date, "%d.%m.%Y")
                 days_delta = (datetime.now() - date_obj).days
@@ -318,10 +292,10 @@ def handle_group_messages(message):
                 
             days_word = get_days_word(days_delta)
             
-            # Звание по количеству сообщений
-            if m_count < 20: title = "🤫 Молчун"
-            elif m_count < 150: title = "💬 Болтун"
-            elif m_count < 500: title = "🔥 Активист"
+            # Обновленные звания
+            if m_count < 100: title = "🤫 Молчун"
+            elif m_count < 500: title = "💬 Общительный"
+            elif m_count < 1000: title = "🔥 Активный"
             else: title = "👑 Легенда Мяу"
 
             stats_msg = (
@@ -338,16 +312,11 @@ def handle_group_messages(message):
             bot.reply_to(message, "🐈‍⬛ Напиши сначала что-нибудь в чат, чтобы я тебя посчитал!")
         return
 
-    # Реакция на "мяу" в группе (Заменено на ❤️)
     if "мяу" in text_lower:
         try:
-            bot.set_message_reaction(
-                chat_id=message.chat.id,
-                message_id=message.message_id,
-                reaction=[types.ReactionTypeEmoji(emoji="❤️")]
-            )
-        except Exception as e:
-            print(f"Не удалось поставить реакцию: {e}")
+            bot.set_message_reaction(chat_id=message.chat.id, message_id=message.message_id, reaction=[types.ReactionTypeEmoji(emoji="❤️")])
+        except Exception:
+            pass
 
 # --- ЛИЧНЫЕ СООБЩЕНИЯ (ЧАТ) ---
 @bot.message_handler(func=lambda message: True)
@@ -357,34 +326,33 @@ def chat_messaging(message):
 
     chat_id = message.chat.id
     
+    # Если юзер в процессе пошаговой регистрации, не перехватываем обычным хэндлером
     if chat_id in reg_data:
         return
 
     conn = sqlite3.connect('database.db')
     cursor = conn.cursor()
-    cursor.execute("SELECT name, partner_id FROM users WHERE chat_id = ?", (chat_id,))
+    cursor.execute("SELECT name, partner_id, age FROM users WHERE chat_id = ?", (chat_id,))
     user_data = cursor.fetchone()
     conn.close()
     
-    if not user_data:
+    if not user_data or not user_data[2]: # Если нет анкеты или не заполнен возраст
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("Начать регистрацию 👾", callback_data="start_reg"))
         bot.send_message(chat_id, "🐈‍⬛ Мяу, перед использованием меню тебе нужно создать профиль!", reply_markup=markup)
         return
 
-    name, partner_id = user_data
+    name, partner_id, _ = user_data
     
     if partner_id > 0:
         last_activity[chat_id] = time.time()
         last_activity[partner_id] = time.time()
-        
         try:
             sent_msg = bot.send_message(partner_id, f"💬 Напарник: {message.text}")
             last_message_id[partner_id] = sent_msg.message_id
             delayed_delete(partner_id, sent_msg.message_id, 60)
         except Exception:
             pass
-            
         last_message_id[chat_id] = message.message_id
         delayed_delete(chat_id, message.message_id, 60)
     else:
@@ -397,10 +365,10 @@ def callback_handlers(call):
     msg_id = call.message.message_id
     
     if call.data == "start_reg":
+        safe_delete(chat_id, msg_id)
         next_msg = bot.send_message(chat_id, "Как к тебе обращаться?")
         reg_data[chat_id] = {'last_bot_msg': next_msg.message_id}
         bot.register_next_step_handler(next_msg, reg_step_name)
-        safe_delete(chat_id, msg_id)
         
     elif call.data == "open_settings":
         bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text="⚙️ Настройки", reply_markup=get_settings_menu())
@@ -665,7 +633,6 @@ def reg_step_age(message):
     if chat_id not in reg_data: return
     age_text = message.text
     
-    # Умная проверка возраста (только цифры от 4 до 100)
     if not age_text.isdigit() or not (4 <= int(age_text) <= 100):
         next_msg = bot.send_message(chat_id, "Мяу, введи настоящий возраст цифрами (от 4 до 100):")
         delayed_delete(chat_id, message.message_id, 5)
@@ -697,26 +664,6 @@ def reg_step_roblox(message):
     next_msg = bot.send_message(chat_id, "Какой твой пол? Кошка/кот", reply_markup=markup)
     reg_data[chat_id]['last_bot_msg'] = next_msg.message_id
     delayed_delete(chat_id, message.message_id, 5)
-    bot.register_next_step_handler(next_msg, reg_step_gender_text)
-
-def reg_step_gender_text(message):
-    chat_id = message.chat.id
-    if chat_id not in reg_data: return
-    
-    text = message.text.lower()
-    if "муж" in text or "кот" in text or "мальчик" in text:
-        reg_data[chat_id]['gender'] = "Мужской 🧎‍♂️🐈‍⬛"
-    elif "жен" in text or "кошк" in text or "девоч" in text:
-        reg_data[chat_id]['gender'] = "Женский 🧎‍♀️🐈‍⬛"
-    else:
-        next_msg = bot.send_message(chat_id, "Мяу, выбери пол кнопкой или напиши понятно (Кот/Кошка):")
-        delayed_delete(chat_id, message.message_id, 5)
-        safe_delete(chat_id, reg_data[chat_id]['last_bot_msg'])
-        reg_data[chat_id]['last_bot_msg'] = next_msg.message_id
-        bot.register_next_step_handler(next_msg, reg_step_gender_text)
-        return
-
-    step_transition(chat_id, message.message_id, reg_data[chat_id]['last_bot_msg'], "В какие игры ты играешь? (Например: Blade ball, brookhaven итд...)", reg_step_games)
 
 def reg_step_games(message):
     chat_id = message.chat.id
@@ -779,17 +726,11 @@ def reg_step_desc(message):
     conn.commit()
     conn.close()
     
-    ok_msg = bot.send_message(chat_id, "Хорошо...")
     delayed_delete(chat_id, message.message_id, 5)
+    safe_delete(chat_id, reg_data[chat_id]['last_bot_msg'])
     
-    def finish_reg():
-        time.sleep(3)
-        safe_delete(chat_id, ok_msg.message_id)
-        safe_delete(chat_id, reg_data[chat_id]['last_bot_msg'])
-        bot.send_message(chat_id, f"С возвращением, {reg_data[chat_id]['name']}!\nЧто делаем мяу? 🐈‍⬛", reply_markup=get_main_menu(chat_id))
-        del reg_data[chat_id]
-        
-    threading.Thread(finish_reg, daemon=True).start()
+    bot.send_message(chat_id, f"Регистрация успешно завершена! С возвращением, {reg_data[chat_id]['name']}!\nЧто делаем мяу? 🐈‍⬛", reply_markup=get_main_menu(chat_id))
+    del reg_data[chat_id]
 
 # --- ОБНОВЛЕНИЕ ПОЛЕЙ В НАСТРОЙКАХ ---
 def update_field(message, field_name, bot_msg_id):
