@@ -38,7 +38,6 @@ init_db()
 last_activity = {}
 reg_data = {}
 last_message_id = {}
-# Храним историю отправленных уведомлений, чтобы не спамить (формат: {chat_id: [id_тех_кого_уже_предлагали]})
 sent_notifications = {} 
 
 # --- Вспомогательные функции ---
@@ -76,10 +75,10 @@ def step_transition(chat_id, user_msg_id, bot_msg_id, next_text, next_step_func,
             
     threading.Thread(target=wait_and_move, daemon=True).start()
 
-# --- ИСПРАВЛЕННЫЙ ФОНОВЫЙ МОНИТОР ---
+# --- ФОНОВЫЙ МОНИТОР ---
 def global_monitor():
     while True:
-        time.sleep(10)  # Проверяем почаще (раз в 10 сек), чтобы уведомления приходили сразу
+        time.sleep(10)
         current_time = time.time()
         
         try:
@@ -96,15 +95,14 @@ def global_monitor():
                     conn.commit()
                     last_activity.pop(chat_id, None)
                     last_activity.pop(partner_id, None)
-                    send_rating_menu(chat_id)
-                    send_rating_menu(partner_id)
+                    send_rating_menu(chat_id, partner_id)
+                    send_rating_menu(partner_id, chat_id)
             
             # 2. Рассылка уведомлений о поиске
             cursor.execute("SELECT chat_id FROM users WHERE is_searching = 1")
             searching_users = [row[0] for row in cursor.fetchall()]
             
             if searching_users:
-                # Находим тех, у кого ВКЛ уведы, кто САМ НЕ ИЩЕТ и КТО СВОБОДЕН
                 cursor.execute("SELECT chat_id FROM users WHERE notifications = 1 AND is_searching = 0 AND partner_id = 0")
                 users_to_notify = [row[0] for row in cursor.fetchall()]
                 
@@ -131,11 +129,11 @@ def global_monitor():
 
 threading.Thread(target=global_monitor, daemon=True).start()
 
-def send_rating_menu(chat_id):
+def send_rating_menu(chat_id, partner_id):
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
-        types.InlineKeyboardButton("👍 Лайк", callback_data="rate_like"),
-        types.InlineKeyboardButton("👎 Дизлайк", callback_data="rate_dislike")
+        types.InlineKeyboardButton("👍 Лайк", callback_data=f"rate_like_{partner_id}"),
+        types.InlineKeyboardButton("👎 Дизлайк", callback_data=f"rate_dislike_{partner_id}")
     )
     bot.send_message(chat_id, "Мяу, общение завершено! Пожалуйста, оцени своего напарника:", reply_markup=markup)
 
@@ -298,11 +296,17 @@ def callback_handlers(call):
         
         if user:
             name, roblox, photo, gender, games, discord, desc, likes = user
-            profile_text = f"👤 **Твой профиль:**\n\n🏷 **Имя:** {name}\n🧬 **Пол:** {gender}\n🟦 **Roblox ник:** {roblox}\n🎵 **Discord:** {discord}\n🎮 **Игры:** {games}\n📝 **О себе:** {desc}\n❤️ **Лайков от напарников:** {likes}"
+            current_likes = int(likes) if likes else 0
+            
+            profile_text = f"👤 **Твой профиль:**\n\n🏷 **Имя:** {name}\n🧬 **Пол:** {gender}\n🟦 **Roblox ник:** {roblox}\n🎵 **Discord:** {discord}\n🎮 **Игры:** {games}\n📝 **О себе:** {desc}\n\n❤️ **Лайков от напарников:** {current_likes}"
+            
             markup = types.InlineKeyboardMarkup()
             markup.add(types.InlineKeyboardButton("← В главное меню", callback_data="delete_and_main"))
-            if photo: bot.send_photo(chat_id, photo, caption=profile_text, parse_mode="Markdown", reply_markup=markup)
-            else: bot.send_message(chat_id, profile_text, parse_mode="Markdown", reply_markup=markup)
+            
+            if photo: 
+                bot.send_photo(chat_id, photo, caption=profile_text, parse_mode="Markdown", reply_markup=markup)
+            else: 
+                bot.send_message(chat_id, profile_text, parse_mode="Markdown", reply_markup=markup)
 
     elif call.data == "delete_and_main":
         safe_delete(chat_id, msg_id)
@@ -352,11 +356,9 @@ def callback_handlers(call):
         conn = sqlite3.connect('database.db')
         cursor = conn.cursor()
         
-        # Проверяем, ищет ли кто-то прямо сейчас
         cursor.execute("SELECT chat_id, name, roblox_nick, photo_id, gender, games, discord, description FROM users WHERE is_searching = 1 AND chat_id != ?", (chat_id,))
         partner = cursor.fetchone()
         
-        # Правильный подсчет всех зарегистрированных пользователей
         cursor.execute("SELECT COUNT(*) FROM users")
         total_users = cursor.fetchone()[0]
         
@@ -414,8 +416,8 @@ def callback_handlers(call):
             conn.commit()
             last_activity.pop(chat_id, None)
             last_activity.pop(partner_id, None)
-            send_rating_menu(chat_id)
-            send_rating_menu(partner_id)
+            send_rating_menu(chat_id, partner_id)
+            send_rating_menu(partner_id, chat_id)
         conn.close()
 
     elif call.data == "ask_username":
@@ -456,8 +458,29 @@ def callback_handlers(call):
         safe_delete(chat_id, msg_id)
         bot.send_message(requester_id, "❌ Напарник отклонил запрос на обмен юзернеймами.")
 
-    elif call.data in ["rate_like", "rate_dislike"]:
+    elif call.data.startswith("rate_like_"):
+        target_partner_id = int(call.data.split("_")[2])
         safe_delete(chat_id, msg_id)
+        
+        conn = sqlite3.connect('database.db')
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET likes = likes + 1 WHERE chat_id = ?", (target_partner_id,))
+        conn.commit()
+        conn.close()
+        
+        bot.answer_callback_query(call.id, "Спасибо за оценку!")
+        bot.send_message(chat_id, "Что делаем мяу? 🐈‍⬛", reply_markup=get_main_menu(chat_id))
+
+    elif call.data.startswith("rate_dislike_"):
+        target_partner_id = int(call.data.split("_")[2])
+        safe_delete(chat_id, msg_id)
+        
+        conn = sqlite3.connect('database.db')
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET dislikes = dislikes + 1 WHERE chat_id = ?", (target_partner_id,))
+        conn.commit()
+        conn.close()
+        
         bot.answer_callback_query(call.id, "Спасибо за оценку!")
         bot.send_message(chat_id, "Что делаем мяу? 🐈‍⬛", reply_markup=get_main_menu(chat_id))
 
@@ -527,7 +550,7 @@ def reg_step_roblox(message):
 def reg_step_games(message):
     chat_id = message.chat.id
     reg_data[chat_id]['games'] = message.text
-    step_transition(chat_id, message.message_id, reg_data[chat_id]['last_bot_msg'], "Какой твой дискорд? Напиши 'нет' если нету 🐈‍⬛", reg_step_discord)
+    step_transition(chat_id, message.message_id, reg_data[chat_id]['last_bot_msg'], "Какой твой дискорд? Напиши 'нет' если неету 🐈‍⬛", reg_step_discord)
 
 def reg_step_discord(message):
     chat_id = message.chat.id
