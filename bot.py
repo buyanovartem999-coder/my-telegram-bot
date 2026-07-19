@@ -7,7 +7,7 @@ import threading
 from datetime import datetime
 
 # Твой токен
-TOKEN = '8744699618:AAGN3JQKcOGWmXnhnIu4XHauCBFsN7eHrnk'
+TOKEN '8744699618:AAH8YSOSNzjnx9AxrjKGWF8ElJcYg2G91gw'
 bot = telebot.TeleBot(TOKEN)
 
 # --- Инициализация базы данных ---
