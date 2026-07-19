@@ -6,7 +6,8 @@ import time
 import threading
 from datetime import datetime
 
-TOKEN = '8744699618:AAFWqy7Yrhy0rSgcyxlRE28N658ZFGKLgA8'
+# Новый рабочий токен
+TOKEN = '8744699618:AAGN3JQKcOGWmXnhnIu4XHauCBFsN7eHrnk'
 bot = telebot.TeleBot(TOKEN)
 
 # --- Инициализация базы данных ---
@@ -455,7 +456,8 @@ def callback_handlers(call):
             else: bot.send_message(chat_id, info_to_user, reply_markup=get_chat_menu())
             
             info_to_partner = f"🎉 Напарник откликнулся на твой поиск! Вы в анонимном чате.\n\n🏷 Имя: {u_name}\n⏳ Возраст: {u_age}\n🟦 Roblox: {u_roblox}\n🧬 Пол: {u_gender}\n🎮 Игры: {u_games}\n🎵 Discord: {u_discord}\n📝 О себе: {u_desc}"
-            if u_photo: bot.send_photo(partner_id, u_photo, caption=info_to_partner, reply_markup=get_chat_menuMenu())
+            # ИСПРАВЛЕНО: Заменена несуществующая функция get_chat_menuMenu() на get_chat_menu()
+            if u_photo: bot.send_photo(partner_id, u_photo, caption=info_to_partner, reply_markup=get_chat_menu())
             else: bot.send_message(partner_id, info_to_partner, reply_markup=get_chat_menu())
         else:
             bot.send_message(chat_id, "Мяу, к сожалению, этот напарник уже кого-то нашел или отменил поиск.", reply_markup=get_main_menu(chat_id))
@@ -790,3 +792,4 @@ if __name__ == '__main__':
     except Exception as e:
         print(f"Ошибка пуллинга: {e}")
         time.sleep(5)
+
