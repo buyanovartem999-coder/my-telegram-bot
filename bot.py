@@ -214,6 +214,20 @@ def start_cmd(message):
         markup.add(types.InlineKeyboardButton("Начать регистрацию 👾", callback_data="start_reg"))
         bot.send_message(chat_id, "🐈‍⬛ Мяу, приветики это Roblox meow поиск напарников!!\n\nПеред началом создай профиль.", reply_markup=markup)
 
+# --- РЕАКЦИЯ НА МЯУ В ГРУППАХ ---
+@bot.message_handler(func=lambda message: message.chat.type in ['group', 'supergroup'])
+def handle_group_meow(message):
+    if message.text and "мяу" in message.text.lower():
+        try:
+            bot.set_message_reaction(
+                chat_id=message.chat.id,
+                message_id=message.message_id,
+                reaction=[types.ReactionTypeEmoji(emoji="👍")]
+            )
+        except Exception as e:
+            print(f"Не удалось поставить реакцию: {e}")
+
+# --- ЛИЧНЫЕ СООБЩЕНИЯ (ЧАТ) ---
 @bot.message_handler(func=lambda message: True)
 def chat_messaging(message):
     if message.chat.type != 'private':
@@ -287,7 +301,6 @@ def callback_handlers(call):
         bot.edit_message_reply_markup(chat_id=chat_id, message_id=msg_id, reply_markup=get_main_menu(chat_id))
         
     elif call.data in ["reg_male", "reg_female"]:
-        # ОШИБКА ИСПРАВЛЕНА ТУТ: Убрано лишнее слово token
         if chat_id in reg_data:
             gender = "Мужской 🧎‍♂️🐈‍⬛" if call.data == "reg_male" else "Женский 🧎‍♀️🐈‍⬛"
             reg_data[chat_id]['gender'] = gender
@@ -661,20 +674,6 @@ def update_photo(message, bot_msg_id):
     conn.commit()
     conn.close()
     bot.send_message(chat_id, "✏️ Что хочешь изменить?", reply_markup=get_edit_menu())
-# --- РЕАКЦИЯ НА МЯУ В ГРУППАХ ---
-@bot.message_handler(func=lambda message: message.chat.type in ['group', 'supergroup'])
-def handle_group_meow(message):
-    # Проверяем, есть ли в тексте "мяу" (переводим в нижний регистр)
-    if message.text and "мяу" in message.text.lower():
-        try:
-            # Отправляем реакцию в виде лайка 👍
-            bot.set_message_reaction(
-                chat_id=message.chat.id,
-                message_id=message.message_id,
-                reaction=[types.ReactionTypeEmoji(emoji="👍")]
-            )
-        except Exception as e:
-            print(f"Не удалось поставить реакцию: {e}")
 
 if __name__ == '__main__':
     print("Бот успешно запущен и готов к работе!")
