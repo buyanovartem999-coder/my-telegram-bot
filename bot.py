@@ -44,6 +44,7 @@ reg_data = {}
 last_message_id = {}
 sent_notifications = {} 
 who_ami_cooldown = {} 
+stats_cooldown = {} # Словарь для кулдауна команды "моя стата"
 
 def safe_delete(chat_id, message_id):
     try:
@@ -208,7 +209,7 @@ def start_cmd(message):
     user = cursor.fetchone()
     conn.close()
     
-    if user and user[1]: # Проверяем, заполнена ли анкета полностью (есть возраст)
+    if user and user[1]: 
         bot.send_message(chat_id, f"С возвращением, {user[0]}!\nЧто делаем мяу? 🐈‍⬛", reply_markup=get_main_menu(chat_id))
     else:
         if chat_id in reg_data:
@@ -266,6 +267,11 @@ def handle_group_messages(message):
         return
 
     if text_lower == "моя стата":
+        if user_id in stats_cooldown and current_time - stats_cooldown[user_id] < 180:
+            left = int(180 - (current_time - stats_cooldown[user_id]))
+            bot.reply_to(message, f"🐈‍⬛ Мяу! Не спамь. Команду можно вызывать раз в 3 минуты (осталось {left} сек).")
+            return
+
         conn = sqlite3.connect('database.db')
         cursor = conn.cursor()
         cursor.execute("SELECT chat_id, name, msg_count, join_date FROM users ORDER BY msg_count DESC")
@@ -282,6 +288,7 @@ def handle_group_messages(message):
         conn.close()
 
         if my_data:
+            stats_cooldown[user_id] = current_time
             _, u_name, m_count, j_date = my_data
             try:
                 date_obj = datetime.strptime(j_date, "%d.%m.%Y")
@@ -292,7 +299,6 @@ def handle_group_messages(message):
                 
             days_word = get_days_word(days_delta)
             
-            # Обновленные звания
             if m_count < 100: title = "🤫 Молчун"
             elif m_count < 500: title = "💬 Общительный"
             elif m_count < 1000: title = "🔥 Активный"
@@ -325,8 +331,6 @@ def chat_messaging(message):
         return
 
     chat_id = message.chat.id
-    
-    # Если юзер в процессе пошаговой регистрации, не перехватываем обычным хэндлером
     if chat_id in reg_data:
         return
 
@@ -336,7 +340,7 @@ def chat_messaging(message):
     user_data = cursor.fetchone()
     conn.close()
     
-    if not user_data or not user_data[2]: # Если нет анкеты или не заполнен возраст
+    if not user_data or not user_data[2]: 
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("Начать регистрацию 👾", callback_data="start_reg"))
         bot.send_message(chat_id, "🐈‍⬛ Мяу, перед использованием меню тебе нужно создать профиль!", reply_markup=markup)
@@ -451,7 +455,7 @@ def callback_handlers(call):
             else: bot.send_message(chat_id, info_to_user, reply_markup=get_chat_menu())
             
             info_to_partner = f"🎉 Напарник откликнулся на твой поиск! Вы в анонимном чате.\n\n🏷 Имя: {u_name}\n⏳ Возраст: {u_age}\n🟦 Roblox: {u_roblox}\n🧬 Пол: {u_gender}\n🎮 Игры: {u_games}\n🎵 Discord: {u_discord}\n📝 О себе: {u_desc}"
-            if u_photo: bot.send_photo(partner_id, u_photo, caption=info_to_partner, reply_markup=get_chat_menu())
+            if u_photo: bot.send_photo(partner_id, u_photo, caption=info_to_partner, reply_markup=get_chat_menuMenu())
             else: bot.send_message(partner_id, info_to_partner, reply_markup=get_chat_menu())
         else:
             bot.send_message(chat_id, "Мяу, к сожалению, этот напарник уже кого-то нашел или отменил поиск.", reply_markup=get_main_menu(chat_id))
@@ -786,4 +790,3 @@ if __name__ == '__main__':
     except Exception as e:
         print(f"Ошибка пуллинга: {e}")
         time.sleep(5)
-
