@@ -6,8 +6,8 @@ import time
 import threading
 from datetime import datetime
 
-# Твой токен
-TOKEN '8744699618:AAH8YSOSNzjnx9AxrjKGWF8ElJcYg2G91gw'
+# Твой новый токен
+TOKEN = '8744699618:AAH8YSOSNzjnx9AxrjKGWF8ElJcYg2G91gw'
 bot = telebot.TeleBot(TOKEN)
 
 # --- Инициализация базы данных ---
@@ -331,7 +331,6 @@ def chat_messaging(message):
     if message.chat.type != 'private':
         return
 
-    # ЖЕЛЕЗНАЯ ЗАЩИТА: Если это команда /start, этот обработчик ПОЛНОСТЬЮ её игнорирует
     if message.text and message.text.startswith('/start'):
         return
 
@@ -345,7 +344,6 @@ def chat_messaging(message):
     user_data = cursor.fetchone()
     conn.close()
     
-    # Если пользователя нет в базе или у него нет возраста (не пройдена рега), игнорируем, чтобы не слать дубли
     if not user_data or not user_data[2]: 
         return
 
@@ -789,7 +787,8 @@ def update_photo(message, bot_msg_id):
 if __name__ == '__main__':
     print("Бот успешно запущен и готов к работе!")
     try:
-        bot.polling(none_stop=True)
+        # Изменено для предотвращения дублирования сообщений
+        bot.infinity_polling(skip_pending_updates=True)
     except Exception as e:
         print(f"Ошибка пуллинга: {e}")
         time.sleep(5)
