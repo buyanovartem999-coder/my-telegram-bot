@@ -331,7 +331,7 @@ def chat_messaging(message):
     if message.chat.type != 'private':
         return
 
-    # Защита от дублирования ответов на /start
+    # ЖЕЛЕЗНАЯ ЗАЩИТА: Если это команда /start, этот обработчик ПОЛНОСТЬЮ её игнорирует
     if message.text and message.text.startswith('/start'):
         return
 
@@ -345,10 +345,8 @@ def chat_messaging(message):
     user_data = cursor.fetchone()
     conn.close()
     
+    # Если пользователя нет в базе или у него нет возраста (не пройдена рега)
     if not user_data or not user_data[2]: 
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("Начать регистрацию 👾", callback_data="start_reg"))
-        bot.send_message(chat_id, "🐈‍⬛ Мяу, перед использованием меню тебе нужно создать профиль!", reply_markup=markup)
         return
 
     name, partner_id, _ = user_data
