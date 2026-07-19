@@ -250,7 +250,7 @@ def handle_group_messages(message):
             bot.set_message_reaction(
                 chat_id=message.chat.id,
                 message_id=message.message_id,
-                reaction=[types.ReactionTypeEmoji(emoji="👍")]
+                reaction=[types.ReactionTypeEmoji(emoji="❤️")]
             )
         except Exception as e:
             print(f"Не удалось поставить реакцию: {e}")
