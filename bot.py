@@ -76,44 +76,44 @@ def step_transition(chat_id, user_msg_id, bot_msg_id, next_text, next_step_func,
             
     threading.Thread(target=wait_and_move, daemon=True).start()
 
-# --- ФОНОВЫЙ МОНИТОР (АКТИВНОСТЬ + УВЕДОМЛЕНИЯ О ПОИСКЕ) ---
+# --- ИСПРАВЛЕННЫЙ ФОНОВЫЙ МОНИТОР ---
 def global_monitor():
     while True:
-        time.sleep(30)  # Проверка каждые 30 секунд
+        time.sleep(10)  # Проверяем почаще (раз в 10 сек), чтобы уведомления приходили сразу
         current_time = time.time()
-        conn = sqlite3.connect('database.db')
-        cursor = conn.cursor()
         
-        # 1. Проверка неактивности в чатах (5 минут)
-        cursor.execute("SELECT chat_id, partner_id FROM users WHERE partner_id > 0")
-        active_chats = cursor.fetchall()
-        for chat_id, partner_id in active_chats:
-            last_t = last_activity.get(chat_id, current_time)
-            if current_time - last_t > 300:
-                cursor.execute("UPDATE users SET partner_id = 0 WHERE chat_id IN (?, ?)", (chat_id, partner_id))
-                conn.commit()
-                last_activity.pop(chat_id, None)
-                last_activity.pop(partner_id, None)
-                send_rating_menu(chat_id)
-                send_rating_menu(partner_id)
-        
-        # 2. Рассылка уведомлений тем, у кого включена функция
-        cursor.execute("SELECT chat_id FROM users WHERE is_searching = 1")
-        searching_users = [row[0] for row in cursor.fetchall()]
-        
-        if searching_users:
-            # Находим всех, у кого включены уведомления, кто не ищет сам и ни с кем не общается
-            cursor.execute("SELECT chat_id FROM users WHERE notifications = 1 AND is_searching = 0 AND partner_id = 0")
-            users_to_notify = [row[0] for row in cursor.fetchall()]
+        try:
+            conn = sqlite3.connect('database.db')
+            cursor = conn.cursor()
             
-            for target_id in users_to_notify:
-                if target_id not in sent_notifications:
-                    sent_notifications[target_id] = []
-                    
-                for searcher_id in searching_users:
-                    # Не предлагаем самого себя и не спамим повторно одним и тем же искателем
-                    if target_id != searcher_id and searcher_id not in sent_notifications[target_id]:
-                        try:
+            # 1. Автовыход по неактивности (5 минут)
+            cursor.execute("SELECT chat_id, partner_id FROM users WHERE partner_id > 0")
+            active_chats = cursor.fetchall()
+            for chat_id, partner_id in active_chats:
+                last_t = last_activity.get(chat_id, current_time)
+                if current_time - last_t > 300:
+                    cursor.execute("UPDATE users SET partner_id = 0 WHERE chat_id IN (?, ?)", (chat_id, partner_id))
+                    conn.commit()
+                    last_activity.pop(chat_id, None)
+                    last_activity.pop(partner_id, None)
+                    send_rating_menu(chat_id)
+                    send_rating_menu(partner_id)
+            
+            # 2. Рассылка уведомлений о поиске
+            cursor.execute("SELECT chat_id FROM users WHERE is_searching = 1")
+            searching_users = [row[0] for row in cursor.fetchall()]
+            
+            if searching_users:
+                # Находим тех, у кого ВКЛ уведы, кто САМ НЕ ИЩЕТ и КТО СВОБОДЕН
+                cursor.execute("SELECT chat_id FROM users WHERE notifications = 1 AND is_searching = 0 AND partner_id = 0")
+                users_to_notify = [row[0] for row in cursor.fetchall()]
+                
+                for target_id in users_to_notify:
+                    if target_id not in sent_notifications:
+                        sent_notifications[target_id] = []
+                        
+                    for searcher_id in searching_users:
+                        if target_id != searcher_id and searcher_id not in sent_notifications[target_id]:
                             markup = types.InlineKeyboardMarkup(row_width=2)
                             markup.add(
                                 types.InlineKeyboardButton("Начать общение 🎮", callback_data=f"notif_connect_{searcher_id}"),
@@ -125,9 +125,9 @@ def global_monitor():
                                 reply_markup=markup
                             )
                             sent_notifications[target_id].append(searcher_id)
-                        except Exception:
-                            pass
-        conn.close()
+            conn.close()
+        except Exception as e:
+            print(f"Ошибка в мониторе: {e}")
 
 threading.Thread(target=global_monitor, daemon=True).start()
 
@@ -308,11 +308,9 @@ def callback_handlers(call):
         safe_delete(chat_id, msg_id)
         bot.send_message(chat_id, "Что делаем мяу? 🐈‍⬛", reply_markup=get_main_menu(chat_id))
 
-    # Кнопка «Пропустить» уведомление о поиске
     elif call.data == "notif_skip":
         safe_delete(chat_id, msg_id)
 
-    # Кнопка «Начать общение» из уведомления
     elif call.data.startswith("notif_connect_"):
         partner_id = int(call.data.split("_")[2])
         safe_delete(chat_id, msg_id)
@@ -320,7 +318,6 @@ def callback_handlers(call):
         conn = sqlite3.connect('database.db')
         cursor = conn.cursor()
         
-        # Проверяем, свободен ли еще этот искатель
         cursor.execute("SELECT is_searching, name, roblox_nick, photo_id, gender, games, discord, description FROM users WHERE chat_id = ?", (partner_id,))
         partner = cursor.fetchone()
         
@@ -328,7 +325,6 @@ def callback_handlers(call):
         my_status = cursor.fetchone()
         
         if partner and partner[0] == 1 and my_status and my_status[0] == 0:
-            # Соединяем их
             cursor.execute("UPDATE users SET is_searching = 0, partner_id = ? WHERE chat_id = ?", (partner_id, chat_id))
             cursor.execute("UPDATE users SET is_searching = 0, partner_id = ? WHERE chat_id = ?", (chat_id, partner_id))
             conn.commit()
@@ -349,14 +345,18 @@ def callback_handlers(call):
             if u_photo: bot.send_photo(partner_id, u_photo, caption=info_to_partner, reply_markup=get_chat_menu())
             else: bot.send_message(partner_id, info_to_partner, reply_markup=get_chat_menu())
         else:
-            bot.send_message(chat_id, "Мяу, к сожалению, этот напарник уже кого-то нашел или отменил поиск. Попробуй запустить обычный поиск!", reply_markup=get_main_menu(chat_id))
+            bot.send_message(chat_id, "Мяу, к сожалению, этот напарник уже кого-то нашел или отменил поиск.", reply_markup=get_main_menu(chat_id))
         conn.close()
 
     elif call.data == "find_teammate":
         conn = sqlite3.connect('database.db')
         cursor = conn.cursor()
+        
+        # Проверяем, ищет ли кто-то прямо сейчас
         cursor.execute("SELECT chat_id, name, roblox_nick, photo_id, gender, games, discord, description FROM users WHERE is_searching = 1 AND chat_id != ?", (chat_id,))
         partner = cursor.fetchone()
+        
+        # Правильный подсчет всех зарегистрированных пользователей
         cursor.execute("SELECT COUNT(*) FROM users")
         total_users = cursor.fetchone()[0]
         
@@ -527,7 +527,7 @@ def reg_step_roblox(message):
 def reg_step_games(message):
     chat_id = message.chat.id
     reg_data[chat_id]['games'] = message.text
-    step_transition(chat_id, message.message_id, reg_data[chat_id]['last_bot_msg'], "Какой твой дискорд? Напиши 'нет' если ненету 🐈‍⬛", reg_step_discord)
+    step_transition(chat_id, message.message_id, reg_data[chat_id]['last_bot_msg'], "Какой твой дискорд? Напиши 'нет' если нету 🐈‍⬛", reg_step_discord)
 
 def reg_step_discord(message):
     chat_id = message.chat.id
