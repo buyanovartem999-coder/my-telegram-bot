@@ -274,7 +274,15 @@ def handle_group_messages(message):
             if photo: bot.send_photo(message.chat.id, photo, caption=profile_text, parse_mode="Markdown")
             else: bot.send_message(message.chat.id, profile_text, parse_mode="Markdown")
         else:
-            bot.reply_to(message, "🐈‍⬛ Мяу! Твой профиль еще не полностью заполнен. Зайди в ЛС к боту и пройди регистрацию через /start")
+            # Вместо текста с /start отправляем красивую кнопку для перехода в бота
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("Пройти регистрацию 🚀", url="https://t.me/Roblox_finder_zero_bot?start=reg"))
+            
+            bot.reply_to(
+                message, 
+                "🐈‍⬛ Мяу! Твой профиль еще не заполнен. Нажми на кнопку ниже, чтобы быстро зарегистрироваться в лс:", 
+                reply_markup=markup
+            )
         return
 
     # Реальная динамическая статистика "Моя стата"
@@ -781,7 +789,7 @@ def reg_step_desc(message):
         bot.send_message(chat_id, f"С возвращением, {reg_data[chat_id]['name']}!\nЧто делаем мяу? 🐈‍⬛", reply_markup=get_main_menu(chat_id))
         del reg_data[chat_id]
         
-    threading.Thread(target=finish_reg, daemon=True).start()
+    threading.Thread(finish_reg, daemon=True).start()
 
 # --- ОБНОВЛЕНИЕ ПОЛЕЙ В НАСТРОЙКАХ ---
 def update_field(message, field_name, bot_msg_id):
