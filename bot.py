@@ -6,7 +6,7 @@ import time
 import threading
 from datetime import datetime
 
-# Твой новый рабочий токен
+# Твой токен
 TOKEN = '8744699618:AAGN3JQKcOGWmXnhnIu4XHauCBFsN7eHrnk'
 bot = telebot.TeleBot(TOKEN)
 
@@ -45,7 +45,7 @@ reg_data = {}
 last_message_id = {}
 sent_notifications = {} 
 who_ami_cooldown = {} 
-stats_cooldown = {} # Словарь для кулдауна команды "моя стата"
+stats_cooldown = {}
 
 def safe_delete(chat_id, message_id):
     try:
@@ -345,7 +345,7 @@ def chat_messaging(message):
     user_data = cursor.fetchone()
     conn.close()
     
-    # Если пользователя нет в базе или у него нет возраста (не пройдена рега)
+    # Если пользователя нет в базе или у него нет возраста (не пройдена рега), игнорируем, чтобы не слать дубли
     if not user_data or not user_data[2]: 
         return
 
