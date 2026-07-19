@@ -198,6 +198,10 @@ def get_edit_menu():
 # --- ОБРАБОТЧИКИ КОМАНД ---
 @bot.message_handler(commands=['start'])
 def start_cmd(message):
+    # Полный игнор групп для команды /start
+    if message.chat.type != 'private':
+        return
+
     chat_id = message.chat.id
     delayed_delete(chat_id, message.message_id, 5)
     
@@ -216,6 +220,10 @@ def start_cmd(message):
 
 @bot.message_handler(func=lambda message: True)
 def chat_messaging(message):
+    # Полный игнор групп для текстовых сообщений
+    if message.chat.type != 'private':
+        return
+
     chat_id = message.chat.id
     conn = sqlite3.connect('database.db')
     cursor = conn.cursor()
