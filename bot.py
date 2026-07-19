@@ -6,7 +6,7 @@ import time
 import threading
 from datetime import datetime
 
-# Новый рабочий токен
+# Твой новый рабочий токен
 TOKEN = '8744699618:AAGN3JQKcOGWmXnhnIu4XHauCBFsN7eHrnk'
 bot = telebot.TeleBot(TOKEN)
 
@@ -331,6 +331,10 @@ def chat_messaging(message):
     if message.chat.type != 'private':
         return
 
+    # Защита от дублирования ответов на /start
+    if message.text and message.text.startswith('/start'):
+        return
+
     chat_id = message.chat.id
     if chat_id in reg_data:
         return
@@ -456,7 +460,6 @@ def callback_handlers(call):
             else: bot.send_message(chat_id, info_to_user, reply_markup=get_chat_menu())
             
             info_to_partner = f"🎉 Напарник откликнулся на твой поиск! Вы в анонимном чате.\n\n🏷 Имя: {u_name}\n⏳ Возраст: {u_age}\n🟦 Roblox: {u_roblox}\n🧬 Пол: {u_gender}\n🎮 Игры: {u_games}\n🎵 Discord: {u_discord}\n📝 О себе: {u_desc}"
-            # ИСПРАВЛЕНО: Заменена несуществующая функция get_chat_menuMenu() на get_chat_menu()
             if u_photo: bot.send_photo(partner_id, u_photo, caption=info_to_partner, reply_markup=get_chat_menu())
             else: bot.send_message(partner_id, info_to_partner, reply_markup=get_chat_menu())
         else:
