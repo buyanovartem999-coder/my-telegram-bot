@@ -7,7 +7,7 @@ import threading
 from datetime import datetime
 
 # Твой новый токен
-TOKEN = '8744699618:AAH8YSOSNzjnx9AxrjKGWF8ElJcYg2G91gw'
+TOKEN = '8744699618:AAHjKke4paar8bnsPXNPAQgv4-BlMhJJZxM'
 bot = telebot.TeleBot(TOKEN)
 
 # --- Инициализация базы данных ---
@@ -787,8 +787,7 @@ def update_photo(message, bot_msg_id):
 if __name__ == '__main__':
     print("Бот успешно запущен и готов к работе!")
     try:
-        # Изменено для предотвращения дублирования сообщений
-        bot.infinity_polling(skip_pending_updates=True)
+        bot.polling(none_stop=True)
     except Exception as e:
         print(f"Ошибка пуллинга: {e}")
         time.sleep(5)
