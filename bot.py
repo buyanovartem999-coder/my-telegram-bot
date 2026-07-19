@@ -198,7 +198,6 @@ def get_edit_menu():
 # --- ОБРАБОТЧИКИ КОМАНД ---
 @bot.message_handler(commands=['start'])
 def start_cmd(message):
-    # Полный игнор групп для команды /start
     if message.chat.type != 'private':
         return
 
@@ -220,19 +219,27 @@ def start_cmd(message):
 
 @bot.message_handler(func=lambda message: True)
 def chat_messaging(message):
-    # Полный игнор групп для текстовых сообщений
     if message.chat.type != 'private':
         return
 
     chat_id = message.chat.id
+    
     conn = sqlite3.connect('database.db')
     cursor = conn.cursor()
-    cursor.execute("SELECT partner_id FROM users WHERE chat_id = ?", (chat_id,))
-    res = cursor.fetchone()
+    cursor.execute("SELECT name, partner_id FROM users WHERE chat_id = ?", (chat_id,))
+    user_data = cursor.fetchone()
     conn.close()
     
-    if res and res[0] > 0:
-        partner_id = res[0]
+    # ЗАКРЫВАЕМ ДОСТУП: Если пользователя нет в базе (не зарегистрирован)
+    if not user_data:
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("Начать регистрацию 👾", callback_data="start_reg"))
+        bot.send_message(chat_id, "🐈‍⬛ Мяу, перед использованием меню тебе нужно создать профиль!", reply_markup=markup)
+        return
+
+    name, partner_id = user_data
+    
+    if partner_id > 0:
         last_activity[chat_id] = time.time()
         last_activity[partner_id] = time.time()
         
@@ -654,4 +661,3 @@ def update_photo(message, bot_msg_id):
 if __name__ == '__main__':
     print("Бот успешно запущен и готов к работе!")
     bot.polling(none_stop=True)
-
