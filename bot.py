@@ -4,9 +4,9 @@ import sqlite3
 import re
 import time
 import threading
-from datetime import datetime, calendar
+from datetime import datetime
 
-# Твой токен
+# Твой новый токен
 TOKEN = '8744699618:AAHjKke4paar8bnsPXNPAQgv4-BlMhJJZxM'
 bot = telebot.TeleBot(TOKEN)
 
@@ -32,9 +32,7 @@ def init_db():
             likes INTEGER DEFAULT 0,
             dislikes INTEGER DEFAULT 0,
             join_date TEXT,
-            msg_count INTEGER DEFAULT 0,
-            meow_count INTEGER DEFAULT 0,
-            last_reset_month TEXT
+            msg_count INTEGER DEFAULT 0
         )
     ''')
     conn.commit()
@@ -48,7 +46,6 @@ last_message_id = {}
 sent_notifications = {} 
 who_ami_cooldown = {} 
 stats_cooldown = {}
-top_cooldown = {}
 
 def safe_delete(chat_id, message_id):
     try:
@@ -87,14 +84,6 @@ def get_days_word(days):
         return "дня"
     else:
         return "дней"
-
-def get_russian_month(month_num):
-    months = {
-        1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель",
-        5: "Май", 6: "Июнь", 7: "Июль", 8: "Август",
-        9: "Сентябрь", 10: "Октябрь", 11: "Ноябрь", 12: "Декабрь"
-    }
-    return months.get(month_num, "")
 
 # --- ФОНОВЫЙ МОНИТОР ---
 def global_monitor():
@@ -236,35 +225,19 @@ def handle_group_messages(message):
     if not message.text:
         return
         
-    text_lower = message.text.lower().strip()
+    text_lower = message.text.lower()
     user_id = message.from_user.id
     current_time = time.time()
-    now = datetime.now()
-    current_month_str = now.strftime("%m.%Y")
 
     conn = sqlite3.connect('database.db')
     cursor = conn.cursor()
-    
-    # Автоматический ежемесячный сброс топа сообщений
-    cursor.execute("SELECT last_reset_month FROM users WHERE chat_id = ?", (user_id,))
-    user_reset = cursor.fetchone()
-    if user_reset and user_reset[0] != current_month_str:
-        cursor.execute("UPDATE users SET msg_count = 0, meow_count = 0, last_reset_month = ?", (current_month_str,))
-        conn.commit()
-
-    is_meow = "мяу" in text_lower
-    
     cursor.execute("SELECT chat_id FROM users WHERE chat_id = ?", (user_id,))
     if cursor.fetchone():
-        if is_meow:
-            cursor.execute("UPDATE users SET msg_count = msg_count + 1, meow_count = meow_count + 1, last_reset_month = ? WHERE chat_id = ?", (current_month_str, user_id))
-        else:
-            cursor.execute("UPDATE users SET msg_count = msg_count + 1, last_reset_month = ? WHERE chat_id = ?", (current_month_str, user_id))
+        cursor.execute("UPDATE users SET msg_count = msg_count + 1 WHERE chat_id = ?", (user_id,))
     else:
-        today_str = now.strftime("%d.%m.%Y")
-        m_c = 1 if is_meow else 0
-        cursor.execute("INSERT INTO users (chat_id, username, name, join_date, msg_count, meow_count, last_reset_month) VALUES (?, ?, ?, ?, 1, ?, ?)",
-                       (user_id, message.from_user.username, message.from_user.first_name, today_str, m_c, current_month_str))
+        today_str = datetime.now().strftime("%d.%m.%Y")
+        cursor.execute("INSERT INTO users (chat_id, username, name, join_date, msg_count) VALUES (?, ?, ?, ?, 1)",
+                       (user_id, message.from_user.username, message.from_user.first_name, today_str))
     conn.commit()
     conn.close()
     
@@ -302,7 +275,7 @@ def handle_group_messages(message):
 
         conn = sqlite3.connect('database.db')
         cursor = conn.cursor()
-        cursor.execute("SELECT chat_id, name, msg_count, join_date, meow_count FROM users ORDER BY msg_count DESC")
+        cursor.execute("SELECT chat_id, name, msg_count, join_date FROM users ORDER BY msg_count DESC")
         leaderboard = cursor.fetchall()
         total_users = len(leaderboard)
         
@@ -317,7 +290,7 @@ def handle_group_messages(message):
 
         if my_data:
             stats_cooldown[user_id] = current_time
-            _, u_name, m_count, j_date, meow_c = my_data
+            _, u_name, m_count, j_date = my_data
             try:
                 date_obj = datetime.strptime(j_date, "%d.%m.%Y")
                 days_delta = (datetime.now() - date_obj).days
@@ -336,8 +309,7 @@ def handle_group_messages(message):
                 f"👤 **Статистика — {message.from_user.first_name}**\n"
                 f"———————————————\n\n"
                 f"🏆 **Место в рейтинге:** {my_rank} место из {total_users}\n"
-                f"💬 **Всего сообщений:** {m_count}\n"
-                f"🐱 **Из них мяуканий:** {meow_c}\n"
+                f"🐱 **Мяуканий (сообщений):** {m_count}\n"
                 f"———————————————\n\n"
                 f"⭐️ **Звание:** {title}\n"
                 f"📅 **В боте с:** {j_date} • с нами {days_delta} {days_word}\n"
@@ -347,53 +319,7 @@ def handle_group_messages(message):
             bot.reply_to(message, "🐈‍⬛ Напиши сначала что-нибудь в чат, чтобы я тебя посчитал!")
         return
 
-    if text_lower == "топ мяу":
-        if user_id in top_cooldown and current_time - top_cooldown[user_id] < 60:
-            left = int(60 - (current_time - top_cooldown[user_id]))
-            bot.reply_to(message, f"🐈‍⬛ Мяу! Не спамь топом. Подожди еще {left} сек.")
-            return
-            
-        top_cooldown[user_id] = current_time
-        
-        conn = sqlite3.connect('database.db')
-        cursor = conn.cursor()
-        cursor.execute("SELECT name, msg_count FROM users WHERE msg_count > 0 ORDER BY msg_count DESC LIMIT 7")
-        top_users = cursor.fetchall()
-        
-        cursor.execute("SELECT SUM(msg_count) FROM users")
-        total_all_msg = cursor.fetchone()[0] or 1
-        conn.close()
-        
-        month_name = get_russian_month(now.month)
-        last_day = calendar.monthrange(now.year, now.month)[1]
-        days_left = last_day - now.day
-        days_left_word = get_days_word(days_left)
-        
-        top_msg = f"👑 **ТОП  МЯУ · 📅 {month_name} ⭐️**\n"
-        top_msg += "———————————————\n"
-        top_msg += "🔥 Призы топ-7 в конце месяца\n\n"
-        top_msg += "🏷 Свой тег в чате на 3 месяца\n"
-        top_msg += "новая победа продлевает ещё на 3\n"
-        top_msg += "———————————————\n"
-        
-        medals = {1: "🥇", 2: "🥈", 3: "🥉"}
-        
-        if not top_users:
-            top_msg += "В этом месяце еще никто не писал сообщения! 😿\n"
-        else:
-            for i, (name, count) in enumerate(top_users, start=1):
-                prefix = medals.get(i, f" {i}. ")
-                percent = int((count / total_all_msg) * 100)
-                top_msg += f"{prefix} {name} — {count} 💬 {percent}%\n"
-                
-        top_msg += "———————————————\n"
-        top_msg += f"⏳ До конца месяца осталось: {days_left} {days_left_word}\n"
-        top_msg += "🐱 Пиши активнее — залетай в топ!"
-        
-        bot.send_message(message.chat.id, top_msg, parse_mode="Markdown")
-        return
-
-    if is_meow:
+    if "мяу" in text_lower:
         try:
             bot.set_message_reaction(chat_id=message.chat.id, message_id=message.message_id, reaction=[types.ReactionTypeEmoji(emoji="❤️")])
         except Exception:
@@ -793,16 +719,15 @@ def reg_step_desc(message):
         
     reg_data[chat_id]['description'] = desc
     today_str = datetime.now().strftime("%d.%m.%Y")
-    current_month_str = datetime.now().strftime("%m.%Y")
     
     conn = sqlite3.connect('database.db')
     cursor = conn.cursor()
     cursor.execute('''
-        INSERT OR REPLACE INTO users (chat_id, username, name, age, roblox_nick, photo_id, gender, games, discord, description, join_date, last_reset_month)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT OR REPLACE INTO users (chat_id, username, name, age, roblox_nick, photo_id, gender, games, discord, description, join_date)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (chat_id, message.from_user.username, reg_data[chat_id]['name'], reg_data[chat_id]['age'], 
           reg_data[chat_id]['roblox_nick'], reg_data[chat_id]['photo_id'], reg_data[chat_id]['gender'], 
-          reg_data[chat_id]['games'], reg_data[chat_id]['discord'], reg_data[chat_id]['description'], today_str, current_month_str))
+          reg_data[chat_id]['games'], reg_data[chat_id]['discord'], reg_data[chat_id]['description'], today_str))
     conn.commit()
     conn.close()
     
