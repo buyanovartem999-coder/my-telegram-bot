@@ -436,10 +436,10 @@ def handle_group_messages(message):
                         reason = lines[1].strip()
 
                     until = int(current_time + duration)
-                    cursor.execute("INSERT INTO punishments (user_id, mute_until) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET mute_until = ?", (target_id, until))
+                    cursor.execute("INSERT INTO punishments (user_id, mute_until) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET mute_until = ?", (target_id, until, until))
                     conn.commit()
                     
-                    # Жесткая защита от падения, даже если у бота нет прав администратора
+                    # Мутим пользователя через Telegram API
                     try: 
                         permissions = types.ChatPermissions(
                             can_send_messages=False,
