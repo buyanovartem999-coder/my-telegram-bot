@@ -184,11 +184,14 @@ def global_monitor():
                                 types.InlineKeyboardButton("Начать общение 🎮", callback_data=f"notif_connect_{searcher_id}"),
                                 types.InlineKeyboardButton("Пропустить ⏭️", callback_data="notif_skip")
                             )
-                            bot.send_message(
-                                target_id, 
-                                "🐈‍⬛ Мяу! Кто-то прямо сейчас ищет напарника по Роблоксу! Хочешь подключиться?", 
-                                reply_markup=markup
-                            )
+                            try:
+                                bot.send_message(
+                                    target_id, 
+                                    "🐈‍⬛ Мяу! Кто-то прямо сейчас ищет напарника по Роблоксу! Хочешь подключиться?", 
+                                    reply_markup=markup
+                                )
+                            except Exception:
+                                pass
                             sent_notifications[target_id].append(searcher_id)
             conn.close()
         except Exception as e:
@@ -202,7 +205,10 @@ def send_rating_menu(chat_id, partner_id):
         types.InlineKeyboardButton("👍 Лайк", callback_data=f"rate_like_{partner_id}"),
         types.InlineKeyboardButton("👎 Дизлайк", callback_data=f"rate_dislike_{partner_id}")
     )
-    bot.send_message(chat_id, "Мяу, общение завершено! Пожалуйста, оцени своего напарника:", reply_markup=markup)
+    try:
+        bot.send_message(chat_id, "Мяу, общение завершено! Пожалуйста, оцени своего напарника:", reply_markup=markup)
+    except Exception:
+        pass
 
 # --- ГЛАВНЫЕ МЕНЮ ---
 def get_main_menu(chat_id, from_user=None):
@@ -368,12 +374,16 @@ def handle_group_messages(message):
 
             conn = sqlite3.connect('database.db')
             cursor = conn.cursor()
-            
-            # Извлечение причины (если текст перенесен на новую строку)
-            lines = text.split('\n', 1)
-            reason = lines[1].strip() if len(lines) > 1 else "Не указана"
 
             if text_lower.startswith("варн"):
+                # Извлечение причины (из второй строки или из слов после команды)
+                lines = text.split('\n', 1)
+                if len(lines) > 1:
+                    reason = lines[1].strip()
+                else:
+                    parts = text.split(maxsplit=1)
+                    reason = parts[1].strip() if len(parts) > 1 else "Не указана"
+
                 cursor.execute("""
                     INSERT INTO punishments (user_id, warns, last_warn_time) 
                     VALUES (?, 1, ?) 
@@ -388,7 +398,7 @@ def handle_group_messages(message):
                     cursor.execute("UPDATE punishments SET is_banned = 1 WHERE user_id = ?", (target_id,))
                     conn.commit()
                     try: bot.ban_chat_member(message.chat.id, target_id)
-                    except: pass
+                    except Exception: pass
                     bot.reply_to(message, f"❌ Пользователь получил 4/4 варнов и был забанен!\nПричина: {reason}\n{squares}")
                 else:
                     bot.reply_to(message, f"⚠️ Пользователю выдан варн [{w_count}/4]\nПричина: {reason}\n{squares}\n\n*Варны сбрасываются через 30 дней.*", parse_mode="Markdown")
@@ -404,6 +414,10 @@ def handle_group_messages(message):
 
             elif text_lower.startswith("мут"):
                 duration = 86400  # Значение по умолчанию: 1 день
+                reason = "Не указана"
+                
+                # Парсинг строки "Мут 1 час Какашки" или с переносом строки
+                lines = text.split('\n', 1)
                 first_line = lines[0]
                 parts = first_line.split()
                 
@@ -414,14 +428,23 @@ def handle_group_messages(message):
                         if "мин" in first_line.lower(): duration = num * 60
                         elif "час" in first_line.lower(): duration = num * 3600
                         elif any(d in first_line.lower() for d in ["день", "дня", "дней"]): duration = num * 86400
+                        
+                        # Причина после времени
+                        if len(parts) >= 3:
+                            reason = " ".join(parts[2:])
+                    else:
+                        reason = " ".join(parts[1:])
+
+                if len(lines) > 1:
+                    reason = lines[1].strip()
 
                 until = int(current_time + duration)
                 cursor.execute("INSERT INTO punishments (user_id, mute_until) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET mute_until = ?", (target_id, until))
                 conn.commit()
                 conn.close()
                 
+                # Надежное ограничение прав без выпадения в фатальный Exception
                 try: 
-                    # Корректное ограничение прав (без вылета)
                     permissions = types.ChatPermissions(
                         can_send_messages=False,
                         can_send_media_messages=False,
@@ -430,7 +453,7 @@ def handle_group_messages(message):
                     )
                     bot.restrict_chat_member(message.chat.id, target_id, until_date=until, permissions=permissions)
                 except Exception as e:
-                    print(f"Ошибка применения мута через Telegram API: {e}")
+                    print(f"Ошибка API Telegram при ограничении прав: {e}")
                 
                 days_txt = int(duration // 86400)
                 hours_txt = int((duration % 86400) // 3600)
@@ -456,16 +479,19 @@ def handle_group_messages(message):
                         can_add_web_page_previews=True
                     )
                     bot.restrict_chat_member(message.chat.id, target_id, permissions=permissions)
-                except: pass
+                except Exception: pass
                 bot.reply_to(message, "🔊 Мут успешно снят.")
                 return
 
             elif text_lower.startswith("бан"):
+                lines = text.split('\n', 1)
+                reason = lines[1].strip() if len(lines) > 1 else (text.split(maxsplit=1)[1] if len(text.split()) > 1 else "Не указана")
+                
                 cursor.execute("INSERT INTO punishments (user_id, is_banned) VALUES (?, 1) ON CONFLICT(user_id) DO UPDATE SET is_banned = 1", (target_id,))
                 conn.commit()
                 conn.close()
                 try: bot.ban_chat_member(message.chat.id, target_id)
-                except: pass
+                except Exception: pass
                 bot.reply_to(message, f"⛔ Пользователь забанен навсегда.\nПричина: {reason}")
                 return
 
@@ -474,16 +500,19 @@ def handle_group_messages(message):
                 conn.commit()
                 conn.close()
                 try: bot.unban_chat_member(message.chat.id, target_id)
-                except: pass
+                except Exception: pass
                 bot.reply_to(message, "✅ Пользователь разбанен.")
                 return
 
             elif text_lower.startswith("кик"):
+                lines = text.split('\n', 1)
+                reason = lines[1].strip() if len(lines) > 1 else (text.split(maxsplit=1)[1] if len(text.split()) > 1 else "Не указана")
+                
                 try: 
                     bot.ban_chat_member(message.chat.id, target_id)
                     bot.unban_chat_member(message.chat.id, target_id)
                     bot.reply_to(message, f"👢 Пользователь кикнут из чата.\nПричина: {reason}")
-                except: 
+                except Exception: 
                     bot.reply_to(message, "Ошибка при попытке кикнуть.")
                 conn.close()
                 return
@@ -541,7 +570,7 @@ def handle_group_messages(message):
             try:
                 date_obj = datetime.strptime(j_date, "%d.%m.%Y")
                 days_delta = (datetime.now() - date_obj).days
-            except:
+            except Exception:
                 j_date = datetime.now().strftime("%d.%m.%Y")
                 days_delta = 0
                 
@@ -1198,9 +1227,10 @@ def update_photo(message, bot_msg_id):
 
 if __name__ == '__main__':
     print("Бот успешно запущен и готов к работе!")
-    try:
-        bot.polling(none_stop=True)
-    except Exception as e:
-        print(f"Ошибка пуллинга: {e}")
-        time.sleep(5)
+    while True:
+        try:
+            bot.polling(none_stop=True, interval=0, timeout=20)
+        except Exception as e:
+            print(f"Ошибка пуллинга: {e}")
+            time.sleep(5)
 
