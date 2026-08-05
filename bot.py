@@ -366,7 +366,7 @@ def handle_group_messages(message):
 
         if target_id:
             target_role = get_user_role(target_id, target_username)
-            is_unpunish_cmd = text_lower in ["анмут", "анварн", "анбан"]
+            is_unpunish_cmd = text_lower.startswith(("анмут", "анварн", "анбан"))
             
             if target_role in ['owner', 'admin', 'moderator'] and not is_unpunish_cmd and message.from_user.id != target_id:
                 bot.reply_to(message, "⛔ Этот пользователь является администрацией, не могу выполнить действия.")
@@ -404,7 +404,7 @@ def handle_group_messages(message):
                 conn.close()
                 return
 
-            elif text_lower == "анварн":
+            elif text_lower.startswith("анварн"):
                 cursor.execute("UPDATE punishments SET warns = MAX(0, warns - 1) WHERE user_id = ?", (target_id,))
                 conn.commit()
                 conn.close()
@@ -468,7 +468,7 @@ def handle_group_messages(message):
                     conn.close()
                 return
 
-            elif text_lower == "анмут":
+            elif text_lower.startswith("анмут"):
                 cursor.execute("UPDATE punishments SET mute_until = 0 WHERE user_id = ?", (target_id,))
                 conn.commit()
                 conn.close()
@@ -477,8 +477,13 @@ def handle_group_messages(message):
                         can_send_messages=True,
                         can_send_media_messages=True,
                         can_send_other_messages=True,
-                        can_add_web_page_previews=True
+                        can_add_web_page_previews=True,
+                        can_send_polls=True,
+                        can_invite_users=True,
+                        can_pin_messages=True,
+                        can_change_info=True
                     )
+                    bot.unban_chat_member(message.chat.id, target_id, only_if_banned=True)
                     bot.restrict_chat_member(message.chat.id, target_id, permissions=permissions)
                 except Exception: pass
                 bot.reply_to(message, "🔊 Мут успешно снят.")
@@ -496,7 +501,7 @@ def handle_group_messages(message):
                 bot.reply_to(message, f"⛔ Пользователь забанен навсегда.\nПричина: {reason}")
                 return
 
-            elif text_lower == "анбан":
+            elif text_lower.startswith("анбан"):
                 cursor.execute("UPDATE punishments SET is_banned = 0 WHERE user_id = ?", (target_id,))
                 conn.commit()
                 conn.close()
@@ -738,13 +743,17 @@ def callback_handlers(call):
             can_send_messages=True,
             can_send_media_messages=True,
             can_send_other_messages=True,
-            can_add_web_page_previews=True
+            can_add_web_page_previews=True,
+            can_send_polls=True,
+            can_invite_users=True,
+            can_pin_messages=True,
+            can_change_info=True
         )
 
         for group_id in known_chats:
             try:
+                bot.unban_chat_member(group_id, target_uid, only_if_banned=True)
                 bot.restrict_chat_member(group_id, target_uid, permissions=permissions)
-                bot.unban_chat_member(group_id, target_uid)
             except Exception:
                 pass
 
@@ -1252,3 +1261,4 @@ if __name__ == '__main__':
         except Exception as e:
             print(f"Ошибка пуллинга: {e}")
             time.sleep(5)
+
