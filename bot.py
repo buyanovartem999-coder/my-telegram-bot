@@ -334,16 +334,26 @@ def handle_group_messages(message):
     # Модераторские команды
     if can_moderate(message.from_user):
         target_id = None
+        target_username = None
+        
         if message.reply_to_message:
             target_id = message.reply_to_message.from_user.id
+            target_username = message.reply_to_message.from_user.username
         else:
             words = text.split()
             for w in words:
                 if w.startswith('@'):
                     target_id = find_user_by_username(w)
+                    target_username = w.replace('@', '').strip()
                     break
 
         if target_id:
+            # Проверка иммунитета администрации
+            target_role = get_user_role(target_id, target_username)
+            if target_role in ['owner', 'admin', 'moderator']:
+                bot.reply_to(message, "⛔ Этот пользователь является администрацией, не могу выполнить действия.")
+                return
+
             conn = sqlite3.connect('database.db')
             cursor = conn.cursor()
             
@@ -1085,3 +1095,4 @@ if __name__ == '__main__':
     except Exception as e:
         print(f"Ошибка пуллинга: {e}")
         time.sleep(5)
+
