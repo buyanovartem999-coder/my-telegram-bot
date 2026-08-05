@@ -51,7 +51,8 @@ def init_db():
             user_id INTEGER PRIMARY KEY,
             warns INTEGER DEFAULT 0,
             mute_until INTEGER DEFAULT 0,
-            is_banned INTEGER DEFAULT 0
+            is_banned INTEGER DEFAULT 0,
+            last_warn_time INTEGER DEFAULT 0
         )
     ''')
     
@@ -148,6 +149,11 @@ def global_monitor():
             conn = sqlite3.connect('database.db')
             cursor = conn.cursor()
             
+            # Авто-сброс варнов спустя 30 дней (30 * 86400 = 2592000 сек)
+            thirty_days_ago = current_time - 2592000
+            cursor.execute("UPDATE punishments SET warns = 0 WHERE last_warn_time > 0 AND last_warn_time < ?", (thirty_days_ago,))
+            conn.commit()
+
             cursor.execute("SELECT chat_id, partner_id FROM users WHERE partner_id > 0")
             active_chats = cursor.fetchall()
             for chat_id, partner_id in active_chats:
@@ -295,11 +301,18 @@ def handle_group_messages(message):
 
     conn = sqlite3.connect('database.db')
     cursor = conn.cursor()
-    cursor.execute("SELECT mute_until, is_banned FROM punishments WHERE user_id = ?", (user_id,))
+    cursor.execute("SELECT mute_until, is_banned, warns, last_warn_time FROM punishments WHERE user_id = ?", (user_id,))
     p_info = cursor.fetchone()
     
     if p_info:
-        mute_until, is_banned = p_info
+        mute_until, is_banned, warns_cnt, last_w_time = p_info
+        
+        # Проверка и авто-сброс варнов за 30 дней
+        if last_w_time > 0 and (current_time - last_w_time > 2592000):
+            cursor.execute("UPDATE punishments SET warns = 0 WHERE user_id = ?", (user_id,))
+            conn.commit()
+            warns_cnt = 0
+
         if is_banned:
             safe_delete(message.chat.id, message.message_id)
             conn.close()
@@ -328,7 +341,7 @@ def handle_group_messages(message):
         warns = res[0] if res else 0
         
         squares = "🟥" * warns + "⬜" * (4 - warns)
-        bot.reply_to(message, f"🐈‍⬛ Твои варны [{warns}/4]:\n{squares}")
+        bot.reply_to(message, f"🐈‍⬛ Твои варны [{warns}/4]:\n{squares}\n\n*Варны полностью сбрасываются до 0 через 30 дней без нарушений.*", parse_mode="Markdown")
         return
 
     # Модераторские команды
@@ -348,7 +361,6 @@ def handle_group_messages(message):
                     break
 
         if target_id:
-            # Проверка иммунитета администрации
             target_role = get_user_role(target_id, target_username)
             if target_role in ['owner', 'admin', 'moderator']:
                 bot.reply_to(message, "⛔ Этот пользователь является администрацией, не могу выполнить действия.")
@@ -357,8 +369,16 @@ def handle_group_messages(message):
             conn = sqlite3.connect('database.db')
             cursor = conn.cursor()
             
+            # Извлечение причины (если текст перенесен на новую строку)
+            lines = text.split('\n', 1)
+            reason = lines[1].strip() if len(lines) > 1 else "Не указана"
+
             if text_lower.startswith("варн"):
-                cursor.execute("INSERT INTO punishments (user_id, warns) VALUES (?, 1) ON CONFLICT(user_id) DO UPDATE SET warns = warns + 1", (target_id,))
+                cursor.execute("""
+                    INSERT INTO punishments (user_id, warns, last_warn_time) 
+                    VALUES (?, 1, ?) 
+                    ON CONFLICT(user_id) DO UPDATE SET warns = warns + 1, last_warn_time = ?
+                """, (target_id, int(current_time), int(current_time)))
                 conn.commit()
                 cursor.execute("SELECT warns FROM punishments WHERE user_id = ?", (target_id,))
                 w_count = cursor.fetchone()[0]
@@ -369,9 +389,9 @@ def handle_group_messages(message):
                     conn.commit()
                     try: bot.ban_chat_member(message.chat.id, target_id)
                     except: pass
-                    bot.reply_to(message, f"❌ Пользователь получил 4/4 варнов и был забанен!\n{squares}")
+                    bot.reply_to(message, f"❌ Пользователь получил 4/4 варнов и был забанен!\nПричина: {reason}\n{squares}")
                 else:
-                    bot.reply_to(message, f"⚠️ Пользователю выдан варн [{w_count}/4]\n{squares}")
+                    bot.reply_to(message, f"⚠️ Пользователю выдан варн [{w_count}/4]\nПричина: {reason}\n{squares}\n\n*Варны сбрасываются через 30 дней.*", parse_mode="Markdown")
                 conn.close()
                 return
 
@@ -383,31 +403,59 @@ def handle_group_messages(message):
                 return
 
             elif text_lower.startswith("мут"):
-                duration = 3600
-                parts = text.split()
+                duration = 86400  # Значение по умолчанию: 1 день
+                first_line = lines[0]
+                parts = first_line.split()
+                
                 if len(parts) >= 2:
                     val = re.sub(r'\D', '', parts[1])
                     if val.isdigit():
                         num = int(val)
-                        if "мин" in text_lower: duration = num * 60
-                        elif "час" in text_lower: duration = num * 3600
-                        elif "день" in text_lower or "дня" in text_lower or "дней" in text_lower: duration = num * 86400
+                        if "мин" in first_line.lower(): duration = num * 60
+                        elif "час" in first_line.lower(): duration = num * 3600
+                        elif any(d in first_line.lower() for d in ["день", "дня", "дней"]): duration = num * 86400
 
                 until = int(current_time + duration)
                 cursor.execute("INSERT INTO punishments (user_id, mute_until) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET mute_until = ?", (target_id, until))
                 conn.commit()
                 conn.close()
                 
-                try: bot.restrict_chat_member(message.chat.id, target_id, until_date=until)
-                except: pass
-                bot.reply_to(message, f"🔇 Пользователь замучен на {int(duration // 60)} мин.")
+                try: 
+                    # Корректное ограничение прав (без вылета)
+                    permissions = types.ChatPermissions(
+                        can_send_messages=False,
+                        can_send_media_messages=False,
+                        can_send_other_messages=False,
+                        can_add_web_page_previews=False
+                    )
+                    bot.restrict_chat_member(message.chat.id, target_id, until_date=until, permissions=permissions)
+                except Exception as e:
+                    print(f"Ошибка применения мута через Telegram API: {e}")
+                
+                days_txt = int(duration // 86400)
+                hours_txt = int((duration % 86400) // 3600)
+                mins_txt = int((duration % 3600) // 60)
+                
+                time_str = ""
+                if days_txt > 0: time_str += f"{days_txt} дн. "
+                if hours_txt > 0: time_str += f"{hours_txt} час. "
+                if mins_txt > 0 or not time_str: time_str += f"{mins_txt} мин."
+                
+                bot.reply_to(message, f"🔇 Пользователю выдан мут на {time_str.strip()}\nПричина: {reason}")
                 return
 
             elif text_lower == "анмут":
                 cursor.execute("UPDATE punishments SET mute_until = 0 WHERE user_id = ?", (target_id,))
                 conn.commit()
                 conn.close()
-                try: bot.restrict_chat_member(message.chat.id, target_id, can_send_messages=True)
+                try: 
+                    permissions = types.ChatPermissions(
+                        can_send_messages=True,
+                        can_send_media_messages=True,
+                        can_send_other_messages=True,
+                        can_add_web_page_previews=True
+                    )
+                    bot.restrict_chat_member(message.chat.id, target_id, permissions=permissions)
                 except: pass
                 bot.reply_to(message, "🔊 Мут успешно снят.")
                 return
@@ -418,7 +466,7 @@ def handle_group_messages(message):
                 conn.close()
                 try: bot.ban_chat_member(message.chat.id, target_id)
                 except: pass
-                bot.reply_to(message, "⛔ Пользователь забанен навсегда.")
+                bot.reply_to(message, f"⛔ Пользователь забанен навсегда.\nПричина: {reason}")
                 return
 
             elif text_lower == "анбан":
@@ -434,7 +482,7 @@ def handle_group_messages(message):
                 try: 
                     bot.ban_chat_member(message.chat.id, target_id)
                     bot.unban_chat_member(message.chat.id, target_id)
-                    bot.reply_to(message, "👢 Пользователь кикнут из чата.")
+                    bot.reply_to(message, f"👢 Пользователь кикнут из чата.\nПричина: {reason}")
                 except: 
                     bot.reply_to(message, "Ошибка при попытке кикнуть.")
                 conn.close()
@@ -637,7 +685,6 @@ def callback_handlers(call):
         conn.commit()
         conn.close()
         bot.answer_callback_query(call.id, "Роль успешно снята!")
-        # Обновляем список админов
         callback_handlers(call)
 
     elif call.data.startswith("view_punished_"):
