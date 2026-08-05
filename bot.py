@@ -149,7 +149,6 @@ def global_monitor():
             conn = sqlite3.connect('database.db')
             cursor = conn.cursor()
             
-            # Авто-сброс варнов спустя 30 дней (30 * 86400 = 2592000 сек)
             thirty_days_ago = current_time - 2592000
             cursor.execute("UPDATE punishments SET warns = 0 WHERE last_warn_time > 0 AND last_warn_time < ?", (thirty_days_ago,))
             conn.commit()
@@ -367,7 +366,10 @@ def handle_group_messages(message):
 
         if target_id:
             target_role = get_user_role(target_id, target_username)
-            if target_role in ['owner', 'admin', 'moderator']:
+            # Разрешаем анмут и снятие ограничений для админов, но запрещаем выдавать им варны/муты/баны
+            is_unmute_cmd = text_lower in ["анмут", "анварн", "анбан"]
+            
+            if target_role in ['owner', 'admin', 'moderator'] and not is_unmute_cmd:
                 bot.reply_to(message, "⛔ Этот пользователь является администрацией, не могу выполнить действия.")
                 return
 
@@ -412,7 +414,7 @@ def handle_group_messages(message):
 
             elif text_lower.startswith("мут"):
                 try:
-                    duration = 86400  # По умолчанию 1 день
+                    duration = 86400  
                     reason = "Не указана"
                     
                     lines = text.split('\n', 1)
@@ -439,7 +441,6 @@ def handle_group_messages(message):
                     cursor.execute("INSERT INTO punishments (user_id, mute_until) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET mute_until = ?", (target_id, until, until))
                     conn.commit()
                     
-                    # Мутим пользователя через Telegram API
                     try: 
                         permissions = types.ChatPermissions(
                             can_send_messages=False,
@@ -725,12 +726,35 @@ def callback_handlers(call):
     elif call.data.startswith("unpunish_"):
         if not is_owner(call.from_user): return
         target_uid = int(call.data.split("_")[1])
+        
+        # Исправление: полностью очищаем муты, баны и варны в базе и через API Telegram для всех чатов, где бот админ
         conn = sqlite3.connect('database.db')
         cursor = conn.cursor()
         cursor.execute("DELETE FROM punishments WHERE user_id = ?", (target_uid,))
         conn.commit()
         conn.close()
-        bot.answer_callback_query(call.id, "Все ограничения пользователя сняты!")
+        
+        try: 
+            permissions = types.ChatPermissions(
+                can_send_messages=True,
+                can_send_media_messages=True,
+                can_send_other_messages=True,
+                can_add_web_page_previews=True
+            )
+            # Так как callback вызывается в личке с ботом, снимаем ограничения в группах, где бот мог зафиксировать пользователя. 
+            # Поскольку ID чата группы здесь неизвестен напрямую из callback, сбрасываем глобальный статус через API на уровне аккаунта (если доступно) или пробуем перебрать известные чаты.
+            # Напрямую через Телеграм API unban/restrict требует chat_id. Добавим универсальный обход для чатов из истории сообщений:
+            for group_id in list(last_message_id.keys()):
+                if group_id < 0: # Это групповой чат
+                    try:
+                        bot.restrict_chat_member(group_id, target_uid, permissions=permissions)
+                        bot.unban_chat_member(group_id, target_uid)
+                    except Exception:
+                        pass
+        except Exception as api_err:
+            print(f"API unpunish error: {api_err}")
+
+        bot.answer_callback_query(call.id, "Все ограничения полностью сняты с пользователя!")
         render_punished_list(chat_id, msg_id, 0)
 
     elif call.data == "toggle_notif":
