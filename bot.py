@@ -366,10 +366,9 @@ def handle_group_messages(message):
 
         if target_id:
             target_role = get_user_role(target_id, target_username)
-            # Разрешаем анмут и снятие ограничений для админов, но запрещаем выдавать им варны/муты/баны
-            is_unmute_cmd = text_lower in ["анмут", "анварн", "анбан"]
+            is_unpunish_cmd = text_lower in ["анмут", "анварн", "анбан"]
             
-            if target_role in ['owner', 'admin', 'moderator'] and not is_unmute_cmd:
+            if target_role in ['owner', 'admin', 'moderator'] and not is_unpunish_cmd and message.from_user.id != target_id:
                 bot.reply_to(message, "⛔ Этот пользователь является администрацией, не могу выполнить действия.")
                 return
 
@@ -727,34 +726,29 @@ def callback_handlers(call):
         if not is_owner(call.from_user): return
         target_uid = int(call.data.split("_")[1])
         
-        # Исправление: полностью очищаем муты, баны и варны в базе и через API Telegram для всех чатов, где бот админ
         conn = sqlite3.connect('database.db')
         cursor = conn.cursor()
         cursor.execute("DELETE FROM punishments WHERE user_id = ?", (target_uid,))
         conn.commit()
         conn.close()
         
-        try: 
-            permissions = types.ChatPermissions(
-                can_send_messages=True,
-                can_send_media_messages=True,
-                can_send_other_messages=True,
-                can_add_web_page_previews=True
-            )
-            # Так как callback вызывается в личке с ботом, снимаем ограничения в группах, где бот мог зафиксировать пользователя. 
-            # Поскольку ID чата группы здесь неизвестен напрямую из callback, сбрасываем глобальный статус через API на уровне аккаунта (если доступно) или пробуем перебрать известные чаты.
-            # Напрямую через Телеграм API unban/restrict требует chat_id. Добавим универсальный обход для чатов из истории сообщений:
-            for group_id in list(last_message_id.keys()):
-                if group_id < 0: # Это групповой чат
-                    try:
-                        bot.restrict_chat_member(group_id, target_uid, permissions=permissions)
-                        bot.unban_chat_member(group_id, target_uid)
-                    except Exception:
-                        pass
-        except Exception as api_err:
-            print(f"API unpunish error: {api_err}")
+        known_chats = set([chat_id for chat_id in last_message_id.keys() if chat_id < 0])
+        
+        permissions = types.ChatPermissions(
+            can_send_messages=True,
+            can_send_media_messages=True,
+            can_send_other_messages=True,
+            can_add_web_page_previews=True
+        )
 
-        bot.answer_callback_query(call.id, "Все ограничения полностью сняты с пользователя!")
+        for group_id in known_chats:
+            try:
+                bot.restrict_chat_member(group_id, target_uid, permissions=permissions)
+                bot.unban_chat_member(group_id, target_uid)
+            except Exception:
+                pass
+
+        bot.answer_callback_query(call.id, "Ограничения полностью сняты!")
         render_punished_list(chat_id, msg_id, 0)
 
     elif call.data == "toggle_notif":
@@ -1258,4 +1252,3 @@ if __name__ == '__main__':
         except Exception as e:
             print(f"Ошибка пуллинга: {e}")
             time.sleep(5)
-
