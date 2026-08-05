@@ -4,16 +4,18 @@ import sqlite3
 import re
 import time
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 
-# Твой новый токен
 TOKEN = '8744699618:AAHjKke4paar8bnsPXNPAQgv4-BlMhJJZxM'
 bot = telebot.TeleBot(TOKEN)
+
+OWNER_USERNAME = 'wehly'
 
 # --- Инициализация базы данных ---
 def init_db():
     conn = sqlite3.connect('database.db')
     cursor = conn.cursor()
+    
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             chat_id INTEGER PRIMARY KEY,
@@ -35,6 +37,24 @@ def init_db():
             msg_count INTEGER DEFAULT 0
         )
     ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS roles (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            role TEXT
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS punishments (
+            user_id INTEGER PRIMARY KEY,
+            warns INTEGER DEFAULT 0,
+            mute_until INTEGER DEFAULT 0,
+            is_banned INTEGER DEFAULT 0
+        )
+    ''')
+    
     conn.commit()
     conn.close()
 
@@ -84,6 +104,40 @@ def get_days_word(days):
         return "дня"
     else:
         return "дней"
+
+# --- Проверка Ролей и Ограничений ---
+def is_owner(user):
+    if user.username and user.username.lower() == OWNER_USERNAME.lower():
+        return True
+    conn = sqlite3.connect('database.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT role FROM roles WHERE user_id = ?", (user.id,))
+    res = cursor.fetchone()
+    conn.close()
+    return res and res[0] == 'owner'
+
+def get_user_role(user_id, username=None):
+    if username and username.lower() == OWNER_USERNAME.lower():
+        return 'owner'
+    conn = sqlite3.connect('database.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT role FROM roles WHERE user_id = ?", (user_id,))
+    res = cursor.fetchone()
+    conn.close()
+    return res[0] if res else 'user'
+
+def can_moderate(user):
+    role = get_user_role(user.id, user.username)
+    return role in ['owner', 'admin', 'moderator']
+
+def find_user_by_username(username):
+    username = username.replace('@', '').strip()
+    conn = sqlite3.connect('database.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT chat_id FROM users WHERE LOWER(username) = LOWER(?)", (username,))
+    res = cursor.fetchone()
+    conn.close()
+    return res[0] if res else None
 
 # --- ФОНОВЫЙ МОНИТОР ---
 def global_monitor():
@@ -145,7 +199,7 @@ def send_rating_menu(chat_id, partner_id):
     bot.send_message(chat_id, "Мяу, общение завершено! Пожалуйста, оцени своего напарника:", reply_markup=markup)
 
 # --- ГЛАВНЫЕ МЕНЮ ---
-def get_main_menu(chat_id):
+def get_main_menu(chat_id, from_user=None):
     conn = sqlite3.connect('database.db')
     cursor = conn.cursor()
     cursor.execute("SELECT notifications FROM users WHERE chat_id = ?", (chat_id,))
@@ -159,6 +213,10 @@ def get_main_menu(chat_id):
     markup.add(types.InlineKeyboardButton("👤 Мой профиль", callback_data="my_profile"),
                types.InlineKeyboardButton("⚙️ Настройки", callback_data="open_settings"))
     markup.add(types.InlineKeyboardButton(f"🔔 Уведомления о поиске: {notif_status}", callback_data="toggle_notif"))
+    
+    if from_user and is_owner(from_user):
+        markup.add(types.InlineKeyboardButton("👑 Назначить Админов", callback_data="admin_panel"))
+
     markup.add(types.InlineKeyboardButton("📣 Канал новостей ↗️", url="https://t.me/TheMeowMeowNews"),
                types.InlineKeyboardButton("👥 Наша группа ↗️", url="https://t.me/MeowMeowNaparniki"))
     markup.add(types.InlineKeyboardButton("💬 Поддержка ↗️", url="https://t.me/wehly"))
@@ -208,10 +266,15 @@ def start_cmd(message):
     cursor = conn.cursor()
     cursor.execute("SELECT name, age FROM users WHERE chat_id = ?", (chat_id,))
     user = cursor.fetchone()
+    
+    today_str = datetime.now().strftime("%d.%m.%Y")
+    cursor.execute("INSERT OR IGNORE INTO users (chat_id, username, join_date) VALUES (?, ?, ?)", 
+                   (chat_id, message.from_user.username, today_str))
+    conn.commit()
     conn.close()
     
     if user and user[1]: 
-        bot.send_message(chat_id, f"С возвращением, {user[0]}!\nЧто делаем мяу? 🐈‍⬛", reply_markup=get_main_menu(chat_id))
+        bot.send_message(chat_id, f"С возвращением, {user[0]}!\nЧто делаем мяу? 🐈‍⬛", reply_markup=get_main_menu(chat_id, message.from_user))
     else:
         if chat_id in reg_data:
             del reg_data[chat_id]
@@ -219,28 +282,154 @@ def start_cmd(message):
         markup.add(types.InlineKeyboardButton("Начать регистрацию 👾", callback_data="start_reg"))
         bot.send_message(chat_id, "🐈‍⬛ Мяу, приветики это Roblox meow поиск напарников!!\n\nПеред началом создай профиль.", reply_markup=markup)
 
-# --- РЕАКЦИИ И КОМАНДЫ В ГРУППАХ ---
+# --- МОДЕРАЦИЯ И ГРУППЫ ---
 @bot.message_handler(func=lambda message: message.chat.type in ['group', 'supergroup'])
 def handle_group_messages(message):
     if not message.text:
         return
         
-    text_lower = message.text.lower()
+    text = message.text.strip()
+    text_lower = text.lower()
     user_id = message.from_user.id
     current_time = time.time()
 
     conn = sqlite3.connect('database.db')
     cursor = conn.cursor()
+    cursor.execute("SELECT mute_until, is_banned FROM punishments WHERE user_id = ?", (user_id,))
+    p_info = cursor.fetchone()
+    
+    if p_info:
+        mute_until, is_banned = p_info
+        if is_banned:
+            safe_delete(message.chat.id, message.message_id)
+            conn.close()
+            return
+        if mute_until > current_time:
+            safe_delete(message.chat.id, message.message_id)
+            conn.close()
+            return
+
     cursor.execute("SELECT chat_id FROM users WHERE chat_id = ?", (user_id,))
     if cursor.fetchone():
-        cursor.execute("UPDATE users SET msg_count = msg_count + 1 WHERE chat_id = ?", (user_id,))
+        cursor.execute("UPDATE users SET msg_count = msg_count + 1, username = ? WHERE chat_id = ?", (message.from_user.username, user_id))
     else:
         today_str = datetime.now().strftime("%d.%m.%Y")
         cursor.execute("INSERT INTO users (chat_id, username, name, join_date, msg_count) VALUES (?, ?, ?, ?, 1)",
                        (user_id, message.from_user.username, message.from_user.first_name, today_str))
     conn.commit()
     conn.close()
-    
+
+    if text_lower == "мои варны":
+        conn = sqlite3.connect('database.db')
+        cursor = conn.cursor()
+        cursor.execute("SELECT warns FROM punishments WHERE user_id = ?", (user_id,))
+        res = cursor.fetchone()
+        conn.close()
+        warns = res[0] if res else 0
+        
+        squares = "🟥" * warns + "⬜" * (4 - warns)
+        bot.reply_to(message, f"🐈‍⬛ Твои варны [{warns}/4]:\n{squares}")
+        return
+
+    # Модераторские команды
+    if can_moderate(message.from_user):
+        target_id = None
+        if message.reply_to_message:
+            target_id = message.reply_to_message.from_user.id
+        else:
+            words = text.split()
+            for w in words:
+                if w.startswith('@'):
+                    target_id = find_user_by_username(w)
+                    break
+
+        if target_id:
+            conn = sqlite3.connect('database.db')
+            cursor = conn.cursor()
+            
+            if text_lower.startswith("варн"):
+                cursor.execute("INSERT INTO punishments (user_id, warns) VALUES (?, 1) ON CONFLICT(user_id) DO UPDATE SET warns = warns + 1", (target_id,))
+                conn.commit()
+                cursor.execute("SELECT warns FROM punishments WHERE user_id = ?", (target_id,))
+                w_count = cursor.fetchone()[0]
+                squares = "🟥" * w_count + "⬜" * (4 - w_count)
+                
+                if w_count >= 4:
+                    cursor.execute("UPDATE punishments SET is_banned = 1 WHERE user_id = ?", (target_id,))
+                    conn.commit()
+                    try: bot.ban_chat_member(message.chat.id, target_id)
+                    except: pass
+                    bot.reply_to(message, f"❌ Пользователь получил 4/4 варнов и был забанен!\n{squares}")
+                else:
+                    bot.reply_to(message, f"⚠️ Пользователю выдан варн [{w_count}/4]\n{squares}")
+                conn.close()
+                return
+
+            elif text_lower == "анварн":
+                cursor.execute("UPDATE punishments SET warns = MAX(0, warns - 1) WHERE user_id = ?", (target_id,))
+                conn.commit()
+                conn.close()
+                bot.reply_to(message, "✅ Варн успешно снят.")
+                return
+
+            elif text_lower.startswith("мут"):
+                duration = 3600
+                parts = text.split()
+                if len(parts) >= 2:
+                    val = re.sub(r'\D', '', parts[1])
+                    if val.isdigit():
+                        num = int(val)
+                        if "мин" in text_lower: duration = num * 60
+                        elif "час" in text_lower: duration = num * 3600
+                        elif "день" in text_lower or "дня" in text_lower or "дней" in text_lower: duration = num * 86400
+
+                until = int(current_time + duration)
+                cursor.execute("INSERT INTO punishments (user_id, mute_until) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET mute_until = ?", (target_id, until))
+                conn.commit()
+                conn.close()
+                
+                try: bot.restrict_chat_member(message.chat.id, target_id, until_date=until)
+                except: pass
+                bot.reply_to(message, f"🔇 Пользователь замучен на {int(duration // 60)} мин.")
+                return
+
+            elif text_lower == "анмут":
+                cursor.execute("UPDATE punishments SET mute_until = 0 WHERE user_id = ?", (target_id,))
+                conn.commit()
+                conn.close()
+                try: bot.restrict_chat_member(message.chat.id, target_id, can_send_messages=True)
+                except: pass
+                bot.reply_to(message, "🔊 Мут успешно снят.")
+                return
+
+            elif text_lower.startswith("бан"):
+                cursor.execute("INSERT INTO punishments (user_id, is_banned) VALUES (?, 1) ON CONFLICT(user_id) DO UPDATE SET is_banned = 1", (target_id,))
+                conn.commit()
+                conn.close()
+                try: bot.ban_chat_member(message.chat.id, target_id)
+                except: pass
+                bot.reply_to(message, "⛔ Пользователь забанен навсегда.")
+                return
+
+            elif text_lower == "анбан":
+                cursor.execute("UPDATE punishments SET is_banned = 0 WHERE user_id = ?", (target_id,))
+                conn.commit()
+                conn.close()
+                try: bot.unban_chat_member(message.chat.id, target_id)
+                except: pass
+                bot.reply_to(message, "✅ Пользователь разбанен.")
+                return
+
+            elif text_lower.startswith("кик"):
+                try: 
+                    bot.ban_chat_member(message.chat.id, target_id)
+                    bot.unban_chat_member(message.chat.id, target_id)
+                    bot.reply_to(message, "👢 Пользователь кикнут из чата.")
+                except: 
+                    bot.reply_to(message, "Ошибка при попытке кикнуть.")
+                conn.close()
+                return
+
     if text_lower == "кто я":
         conn = sqlite3.connect('database.db')
         cursor = conn.cursor()
@@ -361,7 +550,7 @@ def chat_messaging(message):
         last_message_id[chat_id] = message.message_id
         delayed_delete(chat_id, message.message_id, 60)
     else:
-        bot.send_message(chat_id, "Мяу? Воспользуйся кнопками меню ниже.", reply_markup=get_main_menu(chat_id))
+        bot.send_message(chat_id, "Мяу? Воспользуйся кнопками меню ниже.", reply_markup=get_main_menu(chat_id, message.from_user))
 
 # --- ОБРАБОТКА CALLBACK КНОПОК ---
 @bot.callback_query_handler(func=lambda call: True)
@@ -379,11 +568,43 @@ def callback_handlers(call):
         bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text="⚙️ Настройки", reply_markup=get_settings_menu())
         
     elif call.data == "back_to_main":
-        bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text="Что делаем мяу? 🐈‍⬛", reply_markup=get_main_menu(chat_id))
+        bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text="Что делаем мяу? 🐈‍⬛", reply_markup=get_main_menu(chat_id, call.from_user))
         
     elif call.data == "edit_profile":
         bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text="✏️ Что хочешь изменить?", reply_markup=get_edit_menu())
-        
+
+    # --- ПАНЕЛЬ СОЗДАТЕЛЯ (АДМИНКА) ---
+    elif call.data == "admin_panel":
+        if not is_owner(call.from_user): return
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        markup.add(
+            types.InlineKeyboardButton("➕ Назначить Админа/Модера", callback_data="add_admin_role"),
+            types.InlineKeyboardButton("📋 Просмотр нарушителей", callback_data="view_punished_0"),
+            types.InlineKeyboardButton("← Назад", callback_data="back_to_main")
+        )
+        bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text="👑 **Панель Владельца**\nВыбери действие:", parse_mode="Markdown", reply_markup=markup)
+
+    elif call.data == "add_admin_role":
+        if not is_owner(call.from_user): return
+        msg = bot.send_message(chat_id, "Пример: `админ: @username` или `модератор: @username`", parse_mode="Markdown")
+        bot.register_next_step_handler(msg, process_assign_role)
+
+    elif call.data.startswith("view_punished_"):
+        if not is_owner(call.from_user): return
+        page = int(call.data.split("_")[2])
+        render_punished_list(chat_id, msg_id, page)
+
+    elif call.data.startswith("unpunish_"):
+        if not is_owner(call.from_user): return
+        target_uid = int(call.data.split("_")[1])
+        conn = sqlite3.connect('database.db')
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM punishments WHERE user_id = ?", (target_uid,))
+        conn.commit()
+        conn.close()
+        bot.answer_callback_query(call.id, "Все ограничения пользователя сняты!")
+        render_punished_list(chat_id, msg_id, 0)
+
     elif call.data == "toggle_notif":
         conn = sqlite3.connect('database.db')
         cursor = conn.cursor()
@@ -393,7 +614,7 @@ def callback_handlers(call):
         cursor.execute("UPDATE users SET notifications = ? WHERE chat_id = ?", (new_status, chat_id))
         conn.commit()
         conn.close()
-        bot.edit_message_reply_markup(chat_id=chat_id, message_id=msg_id, reply_markup=get_main_menu(chat_id))
+        bot.edit_message_reply_markup(chat_id=chat_id, message_id=msg_id, reply_markup=get_main_menu(chat_id, call.from_user))
         
     elif call.data in ["reg_male", "reg_female"]:
         if chat_id in reg_data:
@@ -423,7 +644,7 @@ def callback_handlers(call):
 
     elif call.data == "delete_and_main":
         safe_delete(chat_id, msg_id)
-        bot.send_message(chat_id, "Что делаем мяу? 🐈‍⬛", reply_markup=get_main_menu(chat_id))
+        bot.send_message(chat_id, "Что делаем мяу? 🐈‍⬛", reply_markup=get_main_menu(chat_id, call.from_user))
 
     elif call.data == "notif_skip":
         safe_delete(chat_id, msg_id)
@@ -459,7 +680,7 @@ def callback_handlers(call):
             if u_photo: bot.send_photo(partner_id, u_photo, caption=info_to_partner, reply_markup=get_chat_menu())
             else: bot.send_message(partner_id, info_to_partner, reply_markup=get_chat_menu())
         else:
-            bot.send_message(chat_id, "Мяу, к сожалению, этот напарник уже кого-то нашел или отменил поиск.", reply_markup=get_main_menu(chat_id))
+            bot.send_message(chat_id, "Мяу, к сожалению, этот напарник уже кого-то нашел или отменил поиск.", reply_markup=get_main_menu(chat_id, call.from_user))
         conn.close()
 
     elif call.data == "find_teammate":
@@ -505,7 +726,7 @@ def callback_handlers(call):
         cursor.execute("UPDATE users SET is_searching = 0 WHERE chat_id = ?", (chat_id,))
         conn.commit()
         conn.close()
-        bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text="Что делаем мяу? 🐈‍⬛", reply_markup=get_main_menu(chat_id))
+        bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text="Что делаем мяу? 🐈‍⬛", reply_markup=get_main_menu(chat_id, call.from_user))
 
     elif call.data == "close_chat":
         safe_delete(chat_id, msg_id)
@@ -569,7 +790,7 @@ def callback_handlers(call):
         conn.commit()
         conn.close()
         bot.answer_callback_query(call.id, "Спасибо за оценку!")
-        bot.send_message(chat_id, "Что делаем мяу? 🐈‍⬛", reply_markup=get_main_menu(chat_id))
+        bot.send_message(chat_id, "Что делаем мяу? 🐈‍⬛", reply_markup=get_main_menu(chat_id, call.from_user))
 
     elif call.data.startswith("rate_dislike_"):
         target_partner_id = int(call.data.split("_")[2])
@@ -580,7 +801,7 @@ def callback_handlers(call):
         conn.commit()
         conn.close()
         bot.answer_callback_query(call.id, "Спасибо за оценку!")
-        bot.send_message(chat_id, "Что делаем мяу? 🐈‍⬛", reply_markup=get_main_menu(chat_id))
+        bot.send_message(chat_id, "Что делаем мяу? 🐈‍⬛", reply_markup=get_main_menu(chat_id, call.from_user))
 
     elif call.data == "change_name":
         safe_delete(chat_id, msg_id)
@@ -625,6 +846,79 @@ def callback_handlers(call):
         safe_delete(chat_id, msg_id)
         m = bot.send_message(chat_id, "Отправь новое фото для твоего профиля: 📸")
         bot.register_next_step_handler(m, update_photo, m.message_id)
+
+# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ АДМИНИСТРИРОВАНИЯ ---
+def process_assign_role(message):
+    text = message.text.strip()
+    match = re.search(r'(админ|модератор):\s*@?([a-zA-Z0-9_\-]+)', text, re.IGNORECASE)
+    if match:
+        role_type = 'admin' if match.group(1).lower() == 'админ' else 'moderator'
+        username = match.group(2).lower()
+        
+        target_id = find_user_by_username(username)
+        if target_id:
+            conn = sqlite3.connect('database.db')
+            cursor = conn.cursor()
+            cursor.execute("INSERT OR REPLACE INTO roles (user_id, username, role) VALUES (?, ?, ?)", (target_id, username, role_type))
+            conn.commit()
+            conn.close()
+            bot.send_message(message.chat.id, f"✅ Пользователь @{username} успешно назначен на роль: **{role_type}**!", parse_mode="Markdown")
+        else:
+            bot.send_message(message.chat.id, f"❌ Пользователь @{username} не найден в базе данных бота. Ему сначала нужно нажать /start в боте.")
+    else:
+        bot.send_message(message.chat.id, "❌ Неверный формат! Формат: `админ: @username` или `модератор: @username`", parse_mode="Markdown")
+
+def render_punished_list(chat_id, msg_id, page=0):
+    conn = sqlite3.connect('database.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT p.user_id, p.warns, p.mute_until, p.is_banned, u.username, u.name 
+        FROM punishments p 
+        LEFT JOIN users u ON p.user_id = u.chat_id 
+        WHERE p.warns > 0 OR p.mute_until > ? OR p.is_banned = 1
+    ''', (int(time.time()),))
+    rows = cursor.fetchall()
+    conn.close()
+
+    if not rows:
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("← Назад в админку", callback_data="admin_panel"))
+        bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text="🎉 Нарушителей пока нет!", reply_markup=markup)
+        return
+
+    per_page = 5
+    total_pages = (len(rows) + per_page - 1) // per_page
+    page = max(0, min(page, total_pages - 1))
+    
+    start_idx = page * per_page
+    end_idx = start_idx + per_page
+    current_rows = rows[start_idx:end_idx]
+
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    text = f"📋 **Список нарушителей (Страница {page+1}/{total_pages}):**\n\n"
+
+    for u_id, warns, mute_until, is_banned, username, name in current_rows:
+        uname_str = f"@{username}" if username else f"ID: {u_id}"
+        reasons = []
+        if is_banned: reasons.append("Бан")
+        if mute_until > time.time(): reasons.append("Мут")
+        if warns > 0: reasons.append(f"Варны: {warns}/4")
+        
+        status_str = ", ".join(reasons)
+        text += f"👤 **{name or 'Неизвестный'}** ({uname_str}) — `{status_str}`\n"
+        markup.add(types.InlineKeyboardButton(f"🔓 Снять ограничения: {uname_str}", callback_data=f"unpunish_{u_id}"))
+
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(types.InlineKeyboardButton("⬅️ Назад", callback_data=f"view_punished_{page-1}"))
+    if page < total_pages - 1:
+        nav_buttons.append(types.InlineKeyboardButton("Вперед ➡️", callback_data=f"view_punished_{page+1}"))
+    
+    if nav_buttons:
+        markup.row(*nav_buttons)
+
+    markup.add(types.InlineKeyboardButton("← Назад в админку", callback_data="admin_panel"))
+    bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=text, parse_mode="Markdown", reply_markup=markup)
 
 # --- ПОШАГОВАЯ РЕГИСТРАЦИЯ ---
 def reg_step_name(message):
@@ -734,7 +1028,7 @@ def reg_step_desc(message):
     delayed_delete(chat_id, message.message_id, 5)
     safe_delete(chat_id, reg_data[chat_id]['last_bot_msg'])
     
-    bot.send_message(chat_id, f"Регистрация успешно завершена! С возвращением, {reg_data[chat_id]['name']}!\nЧто делаем мяу? 🐈‍⬛", reply_markup=get_main_menu(chat_id))
+    bot.send_message(chat_id, f"Регистрация успешно завершена! С возвращением, {reg_data[chat_id]['name']}!\nЧто делаем мяу? 🐈‍⬛", reply_markup=get_main_menu(chat_id, message.from_user))
     del reg_data[chat_id]
 
 # --- ОБНОВЛЕНИЕ ПОЛЕЙ В НАСТРОЙКАХ ---
@@ -791,4 +1085,3 @@ if __name__ == '__main__':
     except Exception as e:
         print(f"Ошибка пуллинга: {e}")
         time.sleep(5)
-
