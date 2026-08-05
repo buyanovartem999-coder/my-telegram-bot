@@ -313,7 +313,6 @@ def handle_group_messages(message):
     if p_info:
         mute_until, is_banned, warns_cnt, last_w_time = p_info
         
-        # Проверка и авто-сброс варнов за 30 дней
         if last_w_time > 0 and (current_time - last_w_time > 2592000):
             cursor.execute("UPDATE punishments SET warns = 0 WHERE user_id = ?", (user_id,))
             conn.commit()
@@ -376,7 +375,6 @@ def handle_group_messages(message):
             cursor = conn.cursor()
 
             if text_lower.startswith("варн"):
-                # Извлечение причины (из второй строки или из слов после команды)
                 lines = text.split('\n', 1)
                 if len(lines) > 1:
                     reason = lines[1].strip()
@@ -413,58 +411,61 @@ def handle_group_messages(message):
                 return
 
             elif text_lower.startswith("мут"):
-                duration = 86400  # Значение по умолчанию: 1 день
-                reason = "Не указана"
-                
-                # Парсинг строки "Мут 1 час Какашки" или с переносом строки
-                lines = text.split('\n', 1)
-                first_line = lines[0]
-                parts = first_line.split()
-                
-                if len(parts) >= 2:
-                    val = re.sub(r'\D', '', parts[1])
-                    if val.isdigit():
-                        num = int(val)
-                        if "мин" in first_line.lower(): duration = num * 60
-                        elif "час" in first_line.lower(): duration = num * 3600
-                        elif any(d in first_line.lower() for d in ["день", "дня", "дней"]): duration = num * 86400
-                        
-                        # Причина после времени
-                        if len(parts) >= 3:
-                            reason = " ".join(parts[2:])
-                    else:
-                        reason = " ".join(parts[1:])
+                try:
+                    duration = 86400  # По умолчанию 1 день
+                    reason = "Не указана"
+                    
+                    lines = text.split('\n', 1)
+                    first_line = lines[0]
+                    parts = first_line.split()
+                    
+                    if len(parts) >= 2:
+                        val = re.sub(r'\D', '', parts[1])
+                        if val.isdigit():
+                            num = int(val)
+                            if "мин" in first_line.lower(): duration = num * 60
+                            elif "час" in first_line.lower(): duration = num * 3600
+                            elif any(d in first_line.lower() for d in ["день", "дня", "дней"]): duration = num * 86400
+                            
+                            if len(parts) >= 3:
+                                reason = " ".join(parts[2:])
+                        else:
+                            reason = " ".join(parts[1:])
 
-                if len(lines) > 1:
-                    reason = lines[1].strip()
+                    if len(lines) > 1:
+                        reason = lines[1].strip()
 
-                until = int(current_time + duration)
-                cursor.execute("INSERT INTO punishments (user_id, mute_until) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET mute_until = ?", (target_id, until))
-                conn.commit()
-                conn.close()
-                
-                # Надежное ограничение прав без выпадения в фатальный Exception
-                try: 
-                    permissions = types.ChatPermissions(
-                        can_send_messages=False,
-                        can_send_media_messages=False,
-                        can_send_other_messages=False,
-                        can_add_web_page_previews=False
-                    )
-                    bot.restrict_chat_member(message.chat.id, target_id, until_date=until, permissions=permissions)
-                except Exception as e:
-                    print(f"Ошибка API Telegram при ограничении прав: {e}")
-                
-                days_txt = int(duration // 86400)
-                hours_txt = int((duration % 86400) // 3600)
-                mins_txt = int((duration % 3600) // 60)
-                
-                time_str = ""
-                if days_txt > 0: time_str += f"{days_txt} дн. "
-                if hours_txt > 0: time_str += f"{hours_txt} час. "
-                if mins_txt > 0 or not time_str: time_str += f"{mins_txt} мин."
-                
-                bot.reply_to(message, f"🔇 Пользователю выдан мут на {time_str.strip()}\nПричина: {reason}")
+                    until = int(current_time + duration)
+                    cursor.execute("INSERT INTO punishments (user_id, mute_until) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET mute_until = ?", (target_id, until))
+                    conn.commit()
+                    
+                    # Жесткая защита от падения, даже если у бота нет прав администратора
+                    try: 
+                        permissions = types.ChatPermissions(
+                            can_send_messages=False,
+                            can_send_media_messages=False,
+                            can_send_other_messages=False,
+                            can_add_web_page_previews=False
+                        )
+                        bot.restrict_chat_member(message.chat.id, target_id, until_date=until, permissions=permissions)
+                    except Exception as api_err:
+                        print(f"Telegram API warning (restrict): {api_err}")
+                    
+                    days_txt = int(duration // 86400)
+                    hours_txt = int((duration % 86400) // 3600)
+                    mins_txt = int((duration % 3600) // 60)
+                    
+                    time_str = ""
+                    if days_txt > 0: time_str += f"{days_txt} дн. "
+                    if hours_txt > 0: time_str += f"{hours_txt} час. "
+                    if mins_txt > 0 or not time_str: time_str += f"{mins_txt} мин."
+                    
+                    bot.reply_to(message, f"🔇 Пользователю выдан мут на {time_str.strip()}\nПричина: {reason}")
+                except Exception as mute_err:
+                    print(f"Ошибка в блоке мута: {mute_err}")
+                    bot.reply_to(message, "❌ Не удалось выдать мут (проверьте права бота в чате).")
+                finally:
+                    conn.close()
                 return
 
             elif text_lower == "анмут":
