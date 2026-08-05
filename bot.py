@@ -215,7 +215,7 @@ def get_main_menu(chat_id, from_user=None):
     markup.add(types.InlineKeyboardButton(f"🔔 Уведомления о поиске: {notif_status}", callback_data="toggle_notif"))
     
     if from_user and is_owner(from_user):
-        markup.add(types.InlineKeyboardButton("👑 Назначить Админов", callback_data="admin_panel"))
+        markup.add(types.InlineKeyboardButton("👑 Управление Админами", callback_data="admin_panel"))
 
     markup.add(types.InlineKeyboardButton("📣 Канал новостей ↗️", url="https://t.me/TheMeowMeowNews"),
                types.InlineKeyboardButton("👥 Наша группа ↗️", url="https://t.me/MeowMeowNaparniki"))
@@ -589,6 +589,8 @@ def callback_handlers(call):
         markup = types.InlineKeyboardMarkup(row_width=1)
         markup.add(
             types.InlineKeyboardButton("➕ Назначить Админа/Модера", callback_data="add_admin_role"),
+            types.InlineKeyboardButton("🛡 Список админов", callback_data="list_admins"),
+            types.InlineKeyboardButton("🗑 Снять админа/модера", callback_data="remove_admin_role"),
             types.InlineKeyboardButton("📋 Просмотр нарушителей", callback_data="view_punished_0"),
             types.InlineKeyboardButton("← Назад", callback_data="back_to_main")
         )
@@ -598,6 +600,45 @@ def callback_handlers(call):
         if not is_owner(call.from_user): return
         msg = bot.send_message(chat_id, "Пример: `админ: @username` или `модератор: @username`", parse_mode="Markdown")
         bot.register_next_step_handler(msg, process_assign_role)
+
+    elif call.data == "remove_admin_role":
+        if not is_owner(call.from_user): return
+        msg = bot.send_message(chat_id, "Введи юзернейм пользователя для снятия роли:\nПример: `@username` или `username`", parse_mode="Markdown")
+        bot.register_next_step_handler(msg, process_remove_role)
+
+    elif call.data == "list_admins":
+        if not is_owner(call.from_user): return
+        conn = sqlite3.connect('database.db')
+        cursor = conn.cursor()
+        cursor.execute("SELECT user_id, username, role FROM roles WHERE role IN ('admin', 'moderator')")
+        roles_list = cursor.fetchall()
+        conn.close()
+
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        if not roles_list:
+            text = "🛡 **Список администрации пуст.**"
+        else:
+            text = "🛡 **Текущая администрация:**\nНажми на кнопку с пользователем, чтобы разжаловать его 1 кликом:\n\n"
+            for u_id, uname, r_type in roles_list:
+                display_name = f"@{uname}" if uname else f"ID: {u_id}"
+                role_label = "Администратор" if r_type == 'admin' else "Модератор"
+                text += f"• {display_name} — `{role_label}`\n"
+                markup.add(types.InlineKeyboardButton(f"❌ Снять: {display_name} ({role_label})", callback_data=f"revoke_role_{u_id}"))
+
+        markup.add(types.InlineKeyboardButton("← Назад в админку", callback_data="admin_panel"))
+        bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=text, parse_mode="Markdown", reply_markup=markup)
+
+    elif call.data.startswith("revoke_role_"):
+        if not is_owner(call.from_user): return
+        target_uid = int(call.data.split("_")[2])
+        conn = sqlite3.connect('database.db')
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM roles WHERE user_id = ?", (target_uid,))
+        conn.commit()
+        conn.close()
+        bot.answer_callback_query(call.id, "Роль успешно снята!")
+        # Обновляем список админов
+        callback_handlers(call)
 
     elif call.data.startswith("view_punished_"):
         if not is_owner(call.from_user): return
@@ -877,6 +918,26 @@ def process_assign_role(message):
             bot.send_message(message.chat.id, f"❌ Пользователь @{username} не найден в базе данных бота. Ему сначала нужно нажать /start в боте.")
     else:
         bot.send_message(message.chat.id, "❌ Неверный формат! Формат: `админ: @username` или `модератор: @username`", parse_mode="Markdown")
+
+def process_remove_role(message):
+    username = message.text.replace('@', '').strip().lower()
+    target_id = find_user_by_username(username)
+    
+    conn = sqlite3.connect('database.db')
+    cursor = conn.cursor()
+    if target_id:
+        cursor.execute("DELETE FROM roles WHERE user_id = ?", (target_id,))
+    else:
+        cursor.execute("DELETE FROM roles WHERE LOWER(username) = LOWER(?)", (username,))
+    
+    rows_affected = cursor.rowcount
+    conn.commit()
+    conn.close()
+    
+    if rows_affected > 0:
+        bot.send_message(message.chat.id, f"✅ Роль администратора/модератора для @{username} успешно снята!")
+    else:
+        bot.send_message(message.chat.id, f"❌ У пользователя @{username} нет активных административных ролей.")
 
 def render_punished_list(chat_id, msg_id, page=0):
     conn = sqlite3.connect('database.db')
